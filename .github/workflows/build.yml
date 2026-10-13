@@ -1,0 +1,83 @@
+name: Build plugin (macOS)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:      # adds a "Run workflow" button in the Actions tab
+
+jobs:
+  build-macos:
+    runs-on: macos-14     # Apple silicon runner
+    defaults:
+      run:
+        shell: bash .github/wrap.sh {0}   # same as plain bash, plus a readable error annotation when a step fails
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCOPY_PLUGIN_AFTER_BUILD=OFF -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: Build engine test, then run it
+        run: |
+          cmake --build build --target engine_test -j4
+          ./build/engine_test
+
+      - name: Compare the 32 kHz and 48 kHz engines (delay times, pitch, reverb decay, spectrum, all eight modes)
+        run: |
+          cmake --build build --target rate_compare_test -j4
+          ./build/rate_compare_test
+
+      - name: Tests of the layers (record, play, switch, mode trips, clear, re-record, format changes, memory)
+        run: |
+          cmake --build build --target layers_test -j4
+          ./build/layers_test
+
+      - name: Live (layer 0, no layer calls) must give exactly the same samples as the HD plug-in (commit aaa28f5)
+        run: |
+          git clone https://github.com/particledots/Unofficial-SuperParasites-HD.git hd
+          git -C hd checkout aaa28f5
+          # Same compiler, same flags, same test program for both; only the DSP sources differ.
+          FLAGS="-std=c++17 -O2 -DTEST=1 -w -include cstdio -include cstdlib -include cmath -include cstring -Wno-narrowing"
+          SOURCES="src/SuperParasitesEngine.cpp third_party/supercell/dsp/correlator.cc third_party/supercell/dsp/granular_processor.cc third_party/supercell/dsp/kammerl_player.cc third_party/supercell/dsp/mu_law.cc third_party/supercell/dsp/pvoc/frame_transformation.cc third_party/supercell/dsp/pvoc/phase_vocoder.cc third_party/supercell/dsp/pvoc/spectral_clouds_transformation.cc third_party/supercell/dsp/pvoc/stft.cc third_party/supercell/resources.cc third_party/stmlib/utils/random.cc third_party/stmlib/dsp/units.cc third_party/stmlib/dsp/atan.cc"
+          (cd hd && c++ $FLAGS -Isrc -Ithird_party ../tests/live_dump.cpp $SOURCES -o ../dump_hd)
+          c++ $FLAGS -Isrc -Ithird_party tests/live_dump.cpp $SOURCES -o dump_layers
+          ./dump_hd 4 > hd.txt
+          ./dump_layers 4 > layers.txt
+          wc -l hd.txt layers.txt
+          diff hd.txt layers.txt && echo "IDENTICAL: 128 mode/quality/buffer-length/engine-rate combinations"
+
+      - name: Build AU + VST3
+        run: cmake --build build --target SuperParasitesLayers_AU SuperParasitesLayers_VST3 -j4
+
+      - name: Ad-hoc sign (lets Apple silicon load an unsigned build)
+        run: |
+          for b in build/SuperParasitesLayers_artefacts/Release/AU/*.component build/SuperParasitesLayers_artefacts/Release/VST3/*.vst3; do
+            codesign --force --deep -s - "$b"
+          done
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp -R build/SuperParasitesLayers_artefacts/Release/AU/*.component dist/
+          cp -R build/SuperParasitesLayers_artefacts/Release/VST3/*.vst3 dist/
+          lipo -archs dist/*.component/Contents/MacOS/*
+          # Show the minimum macOS version baked into each slice (should say 11.0):
+          for a in arm64 x86_64; do echo "== $a"; lipo -thin $a dist/*.component/Contents/MacOS/* -output /tmp/slice_$a; otool -l /tmp/slice_$a | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | grep -E "minos|version"; done
+          cat > dist/INSTALL.txt <<'TXT'
+          1. Unzip.
+          2. Open Terminal and run:   xattr -dr com.apple.quarantine ~/Downloads/SuperParasites-Layers-macOS/*
+             (adjust the path if you unzipped elsewhere; this clears the "downloaded from internet" block)
+          3. Copy "Unofficial SuperParasites Layers.component" to  ~/Library/Audio/Plug-Ins/Components/
+             Copy "Unofficial SuperParasites Layers.vst3"       to  ~/Library/Audio/Plug-Ins/VST3/
+          4. In Logic: Settings > Plug-in Manager > rescan. Look for "particledots: Unofficial SuperParasites Layers"
+             (it is a MIDI-controlled effect: a MIDI note-on presses CAPTURE, a held note is GATE).
+          5. Layers: pick Layer 1-6, press RECORD (press again to stop early), pick another layer to play it. LIVE is the
+             always-recording buffer. Layers are NOT saved with the Logic project.
+          TXT
+          ditto -c -k --keepParent dist SuperParasites-Layers-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SuperParasites-Layers-macOS
+          path: SuperParasites-Layers-macOS.zip
