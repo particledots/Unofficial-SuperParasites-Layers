@@ -2,7 +2,7 @@
 
 A copy of [Unofficial SuperParasites HD](https://github.com/particledots/Unofficial-SuperParasites-HD) (the **Engine Rate** and **Buffer Length** menus and
 the eight SuperParasites modes) with one new feature: **six stored layers**. A layer is a separate recording that you can record into, switch between, and
-play with the existing modes. Layers can be saved to and loaded from **WAV files**, and the layer switch has an optional **Switch Time** fade.
+play with the existing modes. Layers can be saved to and loaded from **WAV files**, presets and projects **remember which file each layer came from** and reload it, the layer switch has an optional **Switch Time** fade, and **Record** is an automatable parameter.
 
 It is a separate plug-in (code `SPLy`, "particledots: Unofficial SuperParasites Layers"), so it installs next to HD, Extended and the original.
 Not a Mutable Instruments product, and not made or endorsed by any of the module makers.
@@ -26,16 +26,29 @@ There is a new **LAYER** menu with seven choices, plus **RECORD**, **CLEAR**, **
     (raised-cosine fades, so a setting of 800 ms is a dip of 800 ms in total). It is a dip through quiet, not an overlap of the two layers: the old layer is gone before
     the new one starts. A true overlap needs a second engine playing at the same time and is not in this version. If you ask for another layer while a fade is running it
     carries on from where the level is.
+  * **RECORD** is also a parameter, "Record" (on = recording, off = stopped), so a Logic automation lane or the button do the same thing; it switches itself off when the layer is full.
   * **SAVE WAV** writes the selected layer to a 16-bit WAV file (mono or stereo as the layer is, at the layer's own sample rate: the engine rate, or 16 kHz in the low-fi
-    qualities; low-fi layers are decoded to 16-bit first). **LOAD WAV** puts a WAV file into the selected layer: any sample rate (resampled to the layer's rate), mono or stereo
-    (a mono file goes to both sides of a stereo layer; a stereo file is mixed down for a mono layer), 8/16/24/32-bit integer or 32/64-bit float. A file longer than the layer is
-    cut to the layer length; a shorter file gives a shorter layer (the rest is silent), just like stopping a recording early. Louder than full scale is clipped. A loaded layer
-    behaves exactly like a recorded one, including being replaced by RECORD. Loading into the layer that is playing swaps the new audio in with the usual fade. Both buttons ask
-    for the file with the normal Mac file dialog. Save and Load hand the audio over through the audio thread, so they only complete while Logic is processing audio (if the
-    transport is stopped and nothing is processing, the plug-in says it is waiting). LOAD is refused while a recording is running, or if Quality / Buffer Length / Engine Rate
-    changed while the file was being read.
-  * The length of a layer is the **Buffer Length** menu (default 10 s), in the current quality: mono holds a little over twice as long, low-fi (8-bit) four times.
-    The status line shows how many seconds each layer holds.
+    qualities; low-fi layers are decoded to 16-bit first) and **links the layer to that file** (see "Layer files" below). **LOAD WAV** puts a WAV file into the selected layer and links
+    it: any sample rate (resampled to the layer's rate), mono or stereo (a mono file goes to both sides of a stereo layer; a stereo file is mixed down for a mono layer),
+    8/16/24/32-bit integer or 32/64-bit float. A file longer than the layer is cut to the layer length; a shorter file gives a shorter layer (the rest is silent), just like stopping a
+    recording early. Louder than full scale is clipped. A loaded layer behaves exactly like a recorded one, including being replaced by RECORD. Loading into the layer that is playing
+    swaps the new audio in with the usual fade. Save and Load hand the audio over through the audio thread, so they complete while the audio is running (Logic keeps running it when the
+    transport is stopped); if it is not running the status line says it is waiting. LOAD is refused while a recording is running.
+
+### Layer files (links) and presets
+A preset (or a Logic project) saves the settings and, for each linked layer, **a reference to its file, not the audio**: the layer number, the path, the file size and a fingerprint
+(a hash of the file's bytes). When the preset is loaded each linked layer is loaded from its file again.
+* **Home folder** (the **FOLDER...** button; default `~/Music/Unofficial Layers`): where the Save dialog starts, and where missing files are searched for. It is remembered per computer
+  (in a small settings file in the user's Application Support folder), not in presets, so set it once on each Mac. Paths inside the home folder are stored relative to it, so the same
+  preset works on another Mac if the home folder contains the same files (for example a Dropbox folder). A file outside the home folder is stored with its full path.
+* **Finding files that moved:** if the file isn't at the stored path, the home folder and all its sub-folders are searched for a `.wav` with the same size and the same fingerprint, whatever
+  it is now called. A file with the same *name* but different audio is **not** used. If the stored path still has a file but its audio has changed, that file is loaded and the layer is
+  marked "(file changed)". If nothing is found the layer stays empty and the status line says "missing: name.wav"; the reference is kept, in case the file comes back.
+* **When a link is dropped:** recording over a linked layer or clearing it removes the link (the layer then shows **unsaved** if it holds audio). A layer marked *unsaved* has no file, so it
+  will **not** come back with a preset.
+* **Format changes:** changing Quality, Buffer Length or Engine Rate still empties the layers, but linked layers are loaded again from their files in the new format; unsaved ones are lost.
+* A preset that lists no layers leaves the current layer audio alone but drops the links. Loading a preset does not start a recording (the Record parameter is never saved as on).
+* Not done: embedding the audio itself in the preset / project.
 
 ### Which modes play layers
 Granular, Pitch shifter / time stretch, Looping delay and Beat repeat. In **Oliverb, Spectral madness, Resonestor and Spectral clouds** the plug-in works on the live
@@ -51,8 +64,8 @@ from just before the layer's write position, which for a full layer is the end o
 ### What empties the layers, and what does not
 * **Emptied:** changing **Quality**, **Buffer Length** or **Engine Rate** (the layers are stored in that format); RECORD on a layer (it is replaced); CLEAR.
 * **Not emptied:** switching layers, going to Live and back, visiting any other mode, the host re-preparing the plug-in (for example a new sample rate or buffer size).
-* **Not saved with the project:** layers live in memory only. Closing the Logic project, or Logic unloading the plug-in, loses them. Use **SAVE WAV** to keep a layer and
-  **LOAD WAV** to bring it back. (Embedding the layers in the project / a plug-in preset, or remembering the WAV file locations in the project, are not in this version.)
+* **Not saved with the project:** the audio is in memory only; closing the Logic project, or Logic unloading the plug-in, loses it. What a preset or project keeps is the *links to files*
+  (see "Layer files"), so a layer must be saved to a file (SAVE WAV) to come back.
 * A layer *shorter* than the buffer (a short recording or a short loaded file) is played by the modes from a buffer that is mostly silent, so what you hear depends on SIZE and
   POSITION (in Looping delay the loop can land on the silent part). This is the same for a short recording as for a short loaded file.
 * Going from a layer to **Live** starts Live from silence (Live's old content is not kept).
@@ -78,7 +91,10 @@ recording buffer and effect memory are as in HD.
   the output; at 0 the output code path is the one from the first Layers build); the hand-over of layers to and from the UI thread, and the conversion for Load (resample,
   mono/stereo, 16-bit or 8-bit mu-law, the 8-sample interpolation tail). Parameters: `layer`, `switch_time`.
 * `LayerAudio.*` (new, JUCE-free): the WAV reader and writer.
-* `PluginProcessor.*`, `PluginEditor.*`: the Layer menu, RECORD / CLEAR / SAVE WAV / LOAD WAV buttons, Switch Time slider, status line.
+* `LayerLibrary.*` (new, JUCE-free, std::filesystem): the file links: save / load jobs, the home folder search by size and fingerprint, what a preset stores and restores,
+  dropping a link when the user edits a layer, reloading linked layers after a format change. The engine got per-layer revision and edit counters for this.
+* `PluginProcessor.*`, `PluginEditor.*`: the Layer menu, RECORD / CLEAR / SAVE WAV / LOAD WAV / FOLDER... buttons, Switch Time slider, a status line per layer, the preset
+  state (a `LAYERFILES` element), the home-folder setting, the `record` parameter, a 10 Hz message-thread timer that finishes saves and loads even when the editor is closed.
 * `tests/layers_test.cpp` and `tests/live_dump.cpp` are new; `tests/bit_exact_dump.cpp` (the Extended comparison) was replaced by `live_dump.cpp`.
 
 ## Install
@@ -87,12 +103,22 @@ Download `SuperParasites-Layers-macOS` from the latest passing run in the Action
 
 ## Verified and not verified
 
-**Reported by Bryn, listening on the M4 Mac mini in Logic (first Layers build, before Save / Load and Switch Time):** it installs and loads without problem; the layers
-sound clear; he recorded four layers and automated the Layer menu from a Logic automation lane and it worked well; the layer switch does not click but changes abruptly (which
-is why Switch Time was added). Nothing below is a claim about how any of it sounds beyond that.
+**Reported by Bryn, listening in Logic (first Layers build):** it installs and loads without problem on the M4 Mac mini and on the Intel Mac (macOS 12.7); the layers sound clear;
+he recorded four layers and automated the Layer menu from a Logic automation lane and it worked well; the layer switch does not click but changes abruptly (which is why Switch Time was
+added). **Second build (Switch Time, Save / Load WAV):** the file dialogs and buttons work; a layer keeps droning when Logic's transport is stopped (so Logic keeps running the
+audio, which Save and Load need); a preset saved with four layers loaded fine but its layers came back empty and had to be loaded by hand (the second build had no file links; the
+links are the third build). On Switch Time he heard a quick fade-out and a slower fade-in, and would prefer the two layers to morph over each other. Nothing here is a claim about
+how any of it sounds beyond that.
 
 **Verified here (Linux, g++, October 2026) — the tests in this repo**
-* `tests/layers_test.cpp`: 1109 checks, all pass.
+* `tests/library_test.cpp` (third build): 73 checks, all pass, with real files in a temporary folder: saving writes the file and links the layer (relative path, size, fingerprint),
+  a new instance restoring the saved links loads identical audio; a renamed file moved into a sub-folder is found by fingerprint (with same-named decoys with different audio ignored);
+  a missing file is reported and nothing is loaded; a changed file is loaded and flagged; garbage in place of the file fails cleanly; absolute paths work without a home folder;
+  recording over or clearing a linked layer drops the link; loading a file links the layer; a format change (stereo to mono, then low-fi with a longer buffer) reloads linked layers
+  and loses unsaved ones; a file that vanished before a format change ends as "missing" without retrying forever; restore waits for the engine to be ready; a save waits while no audio
+  runs; four saves queued together all complete with different content. I broke the library on purpose in six places (no search by fingerprint; ignoring user edits; no reload after a
+  format change; accepting a same-named file; not linking after a save; storing absolute paths only) and the tests failed each time.
+* `tests/layers_test.cpp`: 1119 checks, all pass (the 1109 of the second build plus the layer revision / edit counters).
   * *Layers (as before):* six layers record six different tones and each plays its own tone back through 12 switches in a mixed order; stored audio is unchanged by switching;
     trips through the four non-layer modes return the layer; Live leaves the layers alone; CLEAR, re-record, early stop, format changes, all four qualities, nothing overwrites a playing layer
     (Beat repeat output identical with silent and loud live input), six 10 s layers store the calculated number of bytes (7.68 MB at the 32 kHz engine, 11.52 MB at 48 kHz).
@@ -119,11 +145,19 @@ is why Switch Time was added). Nothing below is a claim about how any of it soun
 arm64 + x86_64 AU and VST3 build, ad-hoc signing, packaging and the `SuperParasites-Layers-macOS` artifact. (I can see each step's pass / fail result, not its log text.)
 
 **Not verified**
-* Loading in Logic on the **Intel Mac** (macOS 12.7).
+* **Switch Time measured, not heard.** In the test (four modes, Switch Time 800 ms, including your Granular settings) the fade-out and the fade-in are symmetric: the level is below
+  half after about 130-200 ms, quietest at about 400 ms, back above half at about 600 ms and above 90 % by 670-720 ms (Pitch shifter, Looping delay, Beat repeat; Granular is too irregular
+  to put numbers on, but its envelope follows the same shape). So the "quick out, slow in" you heard is not a difference in the two fades in the engine; the fade is a dip, not a morph.
 * **Switch Time by ear**: whether the fade sounds good, what settings are useful, and the Switch Time slider and the new buttons in a host (the editor has been seen in Bryn's screenshots
   of the first build, not this one; the layout of the extra row is new).
-* **SAVE WAV / LOAD WAV in Logic on a Mac**: the file dialogs, and the WAV files opening in other programs (only my own reader has read them). Whether Logic keeps processing audio while
-  stopped, which Save and Load need (if it does not, the buttons wait until you press Play).
+* **File links in Logic** (third build): the FOLDER... button, a preset or project bringing its layers back, files found after being moved, "unsaved" / "missing" in the status line, linked
+  layers reloading after a Quality / Buffer Length / Engine Rate change, in a real host. What the host does with a project's plug-in state (when and how often it calls the plug-in's
+  save / load of state, and from which thread) has not been observed; the code takes a lock and tolerates repeated calls.
+* **The Record parameter in an automation lane**: the button and the parameter share one code path (tested in the layer tests for the engine, not in a host). If an automation lane that stays
+  "on" keeps re-asserting the value after the plug-in switches it off at the end of a recording, it could start another recording; not observed.
+* The WAV files opening in other programs (only my own reader has read them).
+* Large home folders: the search for a moved file reads every `.wav` of the same size under the home folder (up to 50,000 entries) on the plug-in's message thread; with thousands of files it
+  could pause the interface for a moment.
 * Project save / reopen (the layers are lost by design; the Switch Time value is saved like any parameter).
 * CPU use and layer switch / load copy time on a Mac; memory use inside Logic.
 * RECORD cannot be automated or MIDI-triggered (it is a button only); Layer and Switch Time are normal automatable parameters.
@@ -131,10 +165,9 @@ arm64 + x86_64 AU and VST3 build, ad-hoc signing, packaging and the `SuperParasi
 * The FEEDBACK / FREEZE behaviour of a playing layer and Beat repeat's slice source (from reading the code, not listened to).
 
 ## Planned
-* A true overlap crossfade (two layers sounding at once) and several layers playing together: both need a second engine and roughly double the CPU.
-* Keeping layers with the Logic project or a plug-in preset: either embed the audio in the saved state (about 11.5 MB for six 10 s stereo layers at 48 kHz), or remember
-  the WAV file locations and reload them (small projects, but a moved file comes back empty).
-* RECORD as an automatable parameter.
+* A true crossfade between layers (Switch Time style: Instant / Dip / Crossfade): start a second engine on the new layer a few hundred milliseconds before the fade so its sound is already
+  running, then cross-fade the two. CPU roughly doubles only during the transition. Several layers playing together needs the same second engine.
+* Optionally embedding the audio in the preset / project (about 11.5 MB for six 10 s stereo layers at 48 kHz) as an alternative to file links.
 
 ## Source and licence
 Same as HD: `third_party/supercell/` is `supercell/dsp/*` and `supercell/resources.*` from `patrickdowling/superparasites` (commit `2e9ed7c`) with the HD changes

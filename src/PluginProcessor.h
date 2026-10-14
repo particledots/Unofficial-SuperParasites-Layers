@@ -2,12 +2,13 @@
 #include <atomic>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "SuperParasitesEngine.h"
+#include "LayerLibrary.h"
 
-class SuperParasitesAudioProcessor : public juce::AudioProcessor
+class SuperParasitesAudioProcessor : public juce::AudioProcessor, private juce::Timer
 {
 public:
     SuperParasitesAudioProcessor();
-    ~SuperParasitesAudioProcessor() override = default;
+    ~SuperParasitesAudioProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -35,24 +36,29 @@ public:
     // The module's CAPTURE button / input: called by the editor's Capture button (MIDI note-ons also fire it).
     void requestCapture() { captureRequested.store (true); }
 
-    // Layers: the editor's RECORD and CLEAR buttons, and the status it shows.
-    void requestRecordLayer() { engine.recordLayer(); }
+    // Layers: the editor's buttons and the status it shows.
     void requestClearLayer()  { engine.clearLayer(); }
     SuperParasitesEngine::LayerStatus layerStatus (int layer) const { return engine.layerStatus (layer); }
     int loadedLayer() const { return engine.loadedLayer(); }
-    // Save / Load a layer as a WAV file (the editor does the file dialogs; the engine hands the audio over safely).
+    bool anyLayerRecording() const;
+    // Layer files: each layer can be tied to a WAV file, which presets and projects remember (see LayerLibrary).
+    LayerLibrary& layerLibrary() { return library; }
     SuperParasitesEngine::LayerFormat layerFormat() const { return engine.layerFormat(); }
-    bool requestExportLayer (int layer) { return engine.requestExport (layer); }
-    SuperParasitesEngine::IoResult pollExport (LayerAudio& out) { return engine.pollExport (out); }
-    bool submitImportLayer (int layer, const LayerAudio& a, std::string& whyNot) { return engine.submitImport (layer, a, whyNot); }
-    SuperParasitesEngine::IoResult pollImport() { return engine.pollImport(); }
+    juce::File getHomeFolder() const;               // where layer files are saved and searched for (kept per computer, not in presets)
+    void setHomeFolder (const juce::File&);
 
     juce::AudioProcessorValueTreeState apvts;
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
+    void timerCallback() override;
+
     SuperParasitesEngine engine;
+    LayerLibrary library { engine };
+    juce::File homeFolder;
+    bool lastRecordParam = false, recordSeen = false;
+    int recordWaitTicks = 0;
     std::vector<float> scratchL, scratchR, inL, inR;
     std::atomic<bool> captureRequested { false };
     int lastMidiNote = 60;

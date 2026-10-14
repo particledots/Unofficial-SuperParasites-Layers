@@ -37,6 +37,7 @@ juce_add_plugin(SuperParasitesLayers
 add_library(superparasites_core STATIC
   src/SuperParasitesEngine.cpp
   src/LayerAudio.cpp
+  src/LayerLibrary.cpp
   third_party/supercell/dsp/correlator.cc
   third_party/supercell/dsp/granular_processor.cc
   third_party/supercell/dsp/kammerl_player.cc
@@ -83,3 +84,7 @@ target_link_libraries(live_dump PRIVATE superparasites_core)
 # --- Tests of the layers:  cmake --build build --target layers_test && build/layers_test ---
 add_executable(layers_test EXCLUDE_FROM_ALL tests/layers_test.cpp)
 target_link_libraries(layers_test PRIVATE superparasites_core)
+
+# --- Tests of the layer files (saving, presets, moved files, format changes): cmake --build build --target library_test && build/library_test ---
+add_executable(library_test EXCLUDE_FROM_ALL tests/library_test.cpp)
+target_link_libraries(library_test PRIVATE superparasites_core)

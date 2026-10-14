@@ -892,6 +892,38 @@ static void testImportLongBuffer ()
     check (r.listen() == 1, "a full-length loaded layer plays");
 }
 
+// ---- O: change counters (what lets a file link tell "the user changed it" from "a format change emptied it") -----------------------
+static void testCounters ()
+{
+    std::printf ("[O] layer revision / edit counters\n");
+    Rig r (48000.0, 1, 0, 0, Engine::LoopingDelay);
+    std::string err;
+    const auto rev = [&] (int k) { return r.e.layerRevision (k); };
+    const auto edit = [&] (int k) { return r.e.layerEditCount (k); };
+    r.select (2);
+    const uint32_t r0 = rev (2), e0 = edit (2), r1b = rev (1), e1b = edit (1);
+    r.e.recordLayer(); r.run (0.2, kTone[2]);
+    check (rev (2) > r0 && edit (2) > e0, "starting a recording is a user edit");
+    const uint32_t r1 = rev (2), e1 = edit (2);
+    r.e.recordLayer(); r.run (0.2, 0.0);
+    check (rev (2) > r1 && edit (2) == e1, "the recording ending changes the revision but is not a new edit", rev (2), edit (2));
+    const uint32_t r2 = rev (2), e2 = edit (2);
+    check (r.e.submitImport (2, makeTone (48000.0, 0.5, kTone[3], kTone[3]), err), "load");
+    check (waitImport (r) == Engine::ImportOk && rev (2) > r2 && edit (2) == e2, "a load changes the revision, not the edit count");
+    check (rev (1) == r1b && edit (1) == e1b, "other layers untouched");
+    const uint32_t r3 = rev (2), e3 = edit (2);
+    r.e.clearLayer(); r.run (0.2, 0.0);
+    check (rev (2) > r3 && edit (2) > e3, "clearing is a user edit");
+    check (r.e.submitImport (3, makeTone (48000.0, 0.5, kTone[3], kTone[3]), err) && waitImport (r) == Engine::ImportOk, "load into 3");
+    const uint32_t r4 = rev (3), e4 = edit (3), r5 = rev (5), e5 = edit (5);
+    r.p.quality = 1; r.run (0.5, 0.0);
+    check (rev (3) > r4 && edit (3) == e4 && rev (5) > r5 && edit (5) == e5, "a format change bumps every revision but no edit count");
+    // export snapshot
+    check (r.e.submitImport (4, makeTone (48000.0, 0.5, kTone[4], kTone[4]), err) && waitImport (r) == Engine::ImportOk, "load into 4");
+    LayerAudio ex; r.e.requestExport (4);
+    check (waitExport (r, ex) == Engine::ExportReady && r.e.exportedRevision() == rev (4) && r.e.exportedEditCount() == edit (4), "the export reports the revision it copied");
+}
+
 int main()
 {
     for (int rate = 0; rate < 2; ++rate)
@@ -916,6 +948,7 @@ int main()
     testImportAlignment();
     testImportEdgeCases();
     testImportLongBuffer();
+    testCounters();
     std::printf ("\nlayers_test: %d checks, %d failed\n", gChecks, gFailed);
     return gFailed == 0 ? 0 : 1;
 }

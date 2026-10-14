@@ -42,6 +42,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout SuperParasitesAudioProcessor
                  juce::StringArray { "32 kHz (original)", "48 kHz (HD)" }, 0));
     p.push_back (std::make_unique<APC> (juce::ParameterID { "layer", 1 }, "Layer",
                  juce::StringArray { "Live", "Layer 1", "Layer 2", "Layer 3", "Layer 4", "Layer 5", "Layer 6" }, 0));
+    // Record: on = record into the selected layer (same as the RECORD button); it switches itself off when the layer is full. Automatable.
+    p.push_back (std::make_unique<APB> (juce::ParameterID { "record", 1 }, "Record", false));
     // How long a layer switch takes. 0 = the short instant swap; above 0 the sound fades out, the layer is swapped, and it fades back in.
     p.push_back (std::make_unique<APF> (juce::ParameterID { "switch_time", 1 }, "Switch Time",
                  juce::NormalisableRange<float> (0.f, SuperParasitesEngine::kMaxSwitchMs, 1.f, 0.4f), 0.f,
@@ -61,11 +63,77 @@ juce::AudioProcessorValueTreeState::ParameterLayout SuperParasitesAudioProcessor
     return { p.begin(), p.end() };
 }
 
+namespace
+{
+    std::unique_ptr<juce::PropertiesFile> openSettings()
+    {
+        juce::PropertiesFile::Options o;
+        o.applicationName = "Unofficial SuperParasites Layers";
+        o.folderName = "particledots";
+        o.filenameSuffix = ".settings";
+        o.osxLibrarySubFolder = "Application Support";
+        o.storageFormat = juce::PropertiesFile::storeAsXML;
+        return std::make_unique<juce::PropertiesFile> (o);
+    }
+}
+
+namespace
+{
+    juce::File loadHomeFolder()
+    {
+        if (auto s = openSettings())
+        {
+            const auto v = s->getValue ("homeFolder");
+            if (v.isNotEmpty()) return juce::File (v);
+        }
+        return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Unofficial Layers");
+    }
+}
+
 SuperParasitesAudioProcessor::SuperParasitesAudioProcessor()
     : AudioProcessor (BusesProperties().withInput ("Input", juce::AudioChannelSet::stereo(), true)
                                        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "STATE", createLayout())
 {
+    homeFolder = loadHomeFolder();
+    library.setHomeFolder (homeFolder.getFullPathName().toStdString());
+    startTimerHz (10);
+}
+
+SuperParasitesAudioProcessor::~SuperParasitesAudioProcessor() { stopTimer(); }
+
+juce::File SuperParasitesAudioProcessor::getHomeFolder() const { return homeFolder; }
+
+void SuperParasitesAudioProcessor::setHomeFolder (const juce::File& f)
+{
+    homeFolder = f;
+    if (auto s = openSettings()) { s->setValue ("homeFolder", f.getFullPathName()); s->saveIfNeeded(); }
+    library.setHomeFolder (f.getFullPathName().toStdString());
+}
+
+bool SuperParasitesAudioProcessor::anyLayerRecording() const
+{
+    for (int i = 1; i <= SuperParasitesEngine::kNumLayers; ++i)
+        if (engine.layerStatus (i).state == SuperParasitesEngine::LayerRecording) return true;
+    return false;
+}
+
+// Runs on the message thread about 10 times a second, whether or not the editor is open: finishes saves and loads, reloads layers after
+// a format change, and switches the Record parameter off once a recording has finished by itself.
+void SuperParasitesAudioProcessor::timerCallback()
+{
+    library.tick();
+    auto* rec = apvts.getParameter ("record");
+    if (rec != nullptr && rec->getValue() > 0.5f)
+    {
+        if (anyLayerRecording()) { recordSeen = true; recordWaitTicks = 0; }
+        else if (recordSeen || ++recordWaitTicks > 12)       // finished by itself, or it never started (Live selected, a mode without layers)
+        {
+            rec->beginChangeGesture(); rec->setValueNotifyingHost (0.0f); rec->endChangeGesture();
+            recordSeen = false; recordWaitTicks = 0;
+        }
+    }
+    else { recordSeen = false; recordWaitTicks = 0; }
 }
 
 bool SuperParasitesAudioProcessor::isBusesLayoutSupported (const BusesLayout& l) const
@@ -128,6 +196,15 @@ void SuperParasitesAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     prm.layer = (int) v ("layer");
     prm.switchTimeMs = v ("switch_time");
 
+    // Record parameter: a rising edge starts recording into the selected layer, a falling edge stops it (the engine's call toggles).
+    const bool recNow = v ("record") > 0.5f;
+    if (recNow != lastRecordParam)
+    {
+        const bool recording = anyLayerRecording();
+        if (recNow != recording) engine.recordLayer();
+        lastRecordParam = recNow;
+    }
+
     const float* l = buffer.getReadPointer (0);
     const float* r = buffer.getReadPointer (chans > 1 ? 1 : 0);
     std::copy (l, l + n, inL.begin());
@@ -150,14 +227,53 @@ juce::AudioProcessorEditor* SuperParasitesAudioProcessor::createEditor()
 
 void SuperParasitesAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
-    if (auto xml = apvts.copyState().createXml()) copyXmlToBinary (*xml, dest);
+    auto state = apvts.copyState();
+    for (auto child : state)                         // never store "recording" as on: loading a preset must not start a recording
+        if (child.hasType ("PARAM") && child.getProperty ("id").toString() == "record") child.setProperty ("value", 0.0f, nullptr);
+    if (auto xml = state.createXml())
+    {
+        // The layers' files (not their audio): which layer, where the file is (relative to the home folder when it is inside it), its size
+        // and its fingerprint, so the file can be found again if it was moved.
+        const auto refs = library.bindings();
+        if (! refs.empty())
+        {
+            auto* node = xml->createNewChildElement ("LAYERFILES");
+            for (const auto& [layer, b] : refs)
+            {
+                auto* e = node->createNewChildElement ("LAYER");
+                e->setAttribute ("index", layer);
+                e->setAttribute ("path", juce::String::fromUTF8 (b.path.c_str()));
+                e->setAttribute ("size", juce::String ((juce::int64) b.size));
+                e->setAttribute ("hash", juce::String::toHexString ((juce::int64) b.hash));
+            }
+        }
+        copyXmlToBinary (*xml, dest);
+    }
 }
 
 void SuperParasitesAudioProcessor::setStateInformation (const void* data, int size)
 {
     if (auto xml = getXmlFromBinary (data, size))
         if (xml->hasTagName (apvts.state.getType()))
+        {
+            std::vector<std::pair<int, LayerLibrary::Binding>> refs;
+            if (auto* node = xml->getChildByName ("LAYERFILES"))
+            {
+                for (auto* e : node->getChildIterator())
+                {
+                    LayerLibrary::Binding b;
+                    b.path = e->getStringAttribute ("path").toStdString();
+                    b.size = (uint64_t) e->getStringAttribute ("size").getLargeIntValue();
+                    b.hash = (uint64_t) e->getStringAttribute ("hash").getHexValue64();
+                    const int layer = e->getIntAttribute ("index");
+                    if (layer >= 1 && layer <= SuperParasitesEngine::kNumLayers && ! b.path.empty()) refs.push_back ({ layer, b });
+                }
+                xml->removeChildElement (node, true);
+            }
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            if (auto* rec = apvts.getParameter ("record")) rec->setValueNotifyingHost (0.0f);
+            library.restore (refs);
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new SuperParasitesAudioProcessor(); }

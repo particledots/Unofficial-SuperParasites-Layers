@@ -66,6 +66,11 @@ public:
     // Empty the selected layer (stops its recording too). Same threading.
     void clearLayer() { clearRequested.store (true); }
     LayerStatus layerStatus (int layer) const;   // layer is 1..kNumLayers
+    // Change counters (for tying a layer to a file). The revision goes up whenever the audio in a layer changes for any reason (a recording
+    // ends, a load, a clear, a format change emptying it); the edit count only when the USER changed it (clear, start of a recording).
+    // So "revision changed, edit count not" on an empty layer means it was emptied by a Quality / Buffer Length / Engine Rate change.
+    uint32_t layerRevision (int layer) const { return uiRev[layer - 1].load(); }
+    uint32_t layerEditCount (int layer) const { return uiEdit[layer - 1].load(); }
     int loadedLayer() const { return uiLoaded.load(); }   // which layer's audio the engine is playing (0 = Live)
     static constexpr float kMaxSwitchMs = 2000.0f;
 
@@ -77,6 +82,9 @@ public:
     // Save: ask for a copy of a filled layer; the audio thread supplies it within a few ms of running. Then poll until it is ready.
     bool requestExport (int layer);                  // false if a request is already in progress
     IoResult pollExport (LayerAudio& out);           // IoNone while pending; ExportReady fills `out` (at the layer's own sample rate)
+    // After ExportReady: the revision / edit count the exported snapshot had (to tie the file to exactly that audio).
+    uint32_t exportedRevision() const { return exportRev; }
+    uint32_t exportedEditCount() const { return exportEdit; }
     // Load: convert the audio to the layer format (resampling, mono/stereo, 16-bit or 8-bit low-fi), truncated to the layer length,
     // and hand it to the audio thread. Returns false (with a reason) if it can't be queued right now. Then poll for the outcome.
     bool submitImport (int layer, const LayerAudio& audio, std::string& whyNot);
@@ -121,6 +129,9 @@ private:
     std::atomic<bool> recordRequested { false }, clearRequested { false };
     std::atomic<int> uiState[kNumLayers];
     std::atomic<float> uiSeconds[kNumLayers];
+    std::atomic<uint32_t> uiRev[kNumLayers], uiEdit[kNumLayers];
+    uint32_t exportRev = 0, exportEdit = 0;
+    void bump (int layer, bool user) { uiRev[layer - 1].fetch_add (1); if (user) uiEdit[layer - 1].fetch_add (1); }
     std::atomic<int> uiLoaded { 0 };
     int loadedLayerIdx = 0;              // layer whose audio is in the processor's sample memory (0 = Live)
     int recLayer = 0;

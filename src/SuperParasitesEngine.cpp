@@ -71,7 +71,7 @@ SuperParasitesEngine::SuperParasitesEngine()
     for (auto& l : layers) for (auto& m : l.mem) m.reserve (most);
     for (auto& m : exportMem) m.reserve (most);     // hand-over copies for Save / Load, also allocated up front
     for (auto& m : importMem) m.reserve (most);
-    for (int i = 0; i < kNumLayers; ++i) { uiState[i].store (LayerEmpty); uiSeconds[i].store (0.0f); }
+    for (int i = 0; i < kNumLayers; ++i) { uiState[i].store (LayerEmpty); uiSeconds[i].store (0.0f); uiRev[i].store (0); uiEdit[i].store (0); }
 }
 
 void SuperParasitesEngine::rebuildProcessor (int bufferLength, int engineRate)
@@ -327,6 +327,7 @@ void SuperParasitesEngine::publishLayers()
 
 void SuperParasitesEngine::invalidateAllLayers()
 {
+    for (int i = 1; i <= kNumLayers; ++i) bump (i, false);
     for (auto& l : layers) { l.filled = false; l.seconds = 0.0f; l.frames = 0; l.head[0] = l.head[1] = 0; l.mem[0].clear(); l.mem[1].clear(); }
     recording = false; recLayer = 0; resetFade();
     fmtValid.store (false);
@@ -386,6 +387,7 @@ void SuperParasitesEngine::finishRecording()
     }
     L.frames = ok ? frames : 0;
     L.filled = ok;
+    bump (recLayer, false);
     L.seconds = ok ? (float) ((double) frames / (double) proc->stored_sample_rate()) : 0.0f;
     recording = false;
     publishLayers();
@@ -398,6 +400,7 @@ void SuperParasitesEngine::discardRecording()
     {
         Layer& L = layers[recLayer - 1];
         L.filled = false; L.seconds = 0.0f; L.frames = 0; L.mem[0].clear(); L.mem[1].clear();
+        bump (recLayer, false);
     }
     proc->EndLayerRecording();
     recording = false;
@@ -418,6 +421,7 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
         Layer& L = layers[wanted - 1];
         if (recording && recLayer == wanted) discardRecording();
         L.filled = false; L.seconds = 0.0f; L.frames = 0; L.mem[0].clear(); L.mem[1].clear();
+        bump (wanted, true);
         if (loadedLayerIdx == wanted && valid) proc->ClearSamples();
         publishLayers();
     }
@@ -434,6 +438,7 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
             proc->BeginLayerRecording();            // clears the memory, records one pass from the start
             recording = true; recLayer = target;
             layers[target - 1].filled = false; layers[target - 1].seconds = 0.0f; layers[target - 1].frames = 0;
+            bump (target, true);
             layers[target - 1].mem[0].clear(); layers[target - 1].mem[1].clear();
             publishLayers();
         }
@@ -619,6 +624,7 @@ void SuperParasitesEngine::serviceTransfers()
             exportFrames = L.frames;
             exportRate = fmtRate.load();
             exportLowFi = fmtLowFi.load();
+            exportRev = uiRev[ly - 1].load(); exportEdit = uiEdit[ly - 1].load();
             exportState.store (2);
         }
         else
@@ -641,6 +647,7 @@ void SuperParasitesEngine::serviceTransfers()
             L.head[0] = L.head[1] = (importFrames >= cap ? 0 : importFrames);   // as if it had been recorded: the head wraps after a full pass
             L.seconds = (float) ((double) importFrames / fmtRate.load());
             L.filled = true;
+            bump (ly, false);
             if (loadedLayerIdx == ly) reloadNeeded = true;    // it is playing now: swap the new audio in with the usual fade
             publishLayers();
             importOutcome.store (ImportOk);

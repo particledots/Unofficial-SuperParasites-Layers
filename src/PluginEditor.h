@@ -51,16 +51,15 @@ private:
     juce::ToggleButton freeze { "FREEZE" }, reverse { "REVERSE" }, gate { "GATE" }, pitchMidi { "PITCH FOLLOWS MIDI" };
     juce::TextButton capture { "CAPTURE" };
     Menu layerMenu;
-    juce::TextButton recordLayer { "RECORD" }, clearLayer { "CLEAR" }, saveLayer { "SAVE WAV" }, loadLayer { "LOAD WAV" };
+    juce::TextButton recordLayer { "RECORD" }, clearLayer { "CLEAR" }, saveLayer { "SAVE WAV" }, loadLayer { "LOAD WAV" }, homeButton { "FOLDER..." };
     Knob switchTime;                       // drawn as a horizontal slider
-    juce::Label layerStatusLabel, layerNote, ioLabel;
-    // Save / Load WAV
+    juce::Label layerStatusLabel, layerNote, ioLabel, homeLabel;
+    juce::Label layerLines[SuperParasitesEngine::kNumLayers];
     std::unique_ptr<juce::FileChooser> chooser;
-    juce::File pendingSaveFile;
-    bool savePending = false, loadPending = false;
-    int saveWaitTicks = 0, ioMessageTicks = 0;
+    int ioMessageTicks = 0;
     void startSave();
     void startLoad();
+    void chooseHome();
     void showMessage (const juce::String& text);
     juce::String shownStatus;
     void timerCallback() override;

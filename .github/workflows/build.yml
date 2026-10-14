@@ -33,6 +33,11 @@ jobs:
           cmake --build build --target layers_test -j4
           ./build/layers_test
 
+      - name: Tests of the layer files (save, presets, moved / missing / changed files, user edits, format changes)
+        run: |
+          cmake --build build --target library_test -j4
+          ./build/library_test
+
       - name: Live (layer 0, no layer calls) must give exactly the same samples as the HD plug-in (commit aaa28f5)
         run: |
           git clone https://github.com/particledots/Unofficial-SuperParasites-HD.git hd
@@ -74,8 +79,10 @@ jobs:
              (it is a MIDI-controlled effect: a MIDI note-on presses CAPTURE, a held note is GATE).
           5. Layers: pick Layer 1-6, press RECORD (press again to stop early), pick another layer to play it. LIVE is the
              always-recording buffer. SWITCH TIME = how long the layer change takes (Instant, or a fade out and in).
-             SAVE WAV / LOAD WAV write a layer to a WAV file or put a WAV file into it (Logic must be running audio).
-             Layers are NOT saved with the Logic project - save them as WAV files to keep them.
+             SAVE WAV / LOAD WAV write a layer to a WAV file or put a WAV file into it, and link the layer to that file.
+             Presets and projects remember the links (not the audio) and reload the layers; if a file was moved it is found
+             again in the home folder (FOLDER... button; default ~/Music/Unofficial Layers) by its fingerprint.
+             RECORD is an automatable parameter. A layer marked "unsaved" has no file and will not come back.
           TXT
           ditto -c -k --keepParent dist SuperParasites-Layers-macOS.zip
 
