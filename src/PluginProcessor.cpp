@@ -69,6 +69,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout SuperParasitesAudioProcessor
                  juce::StringArray { "Off", "Layer 1", "Layer 2", "Layer 3", "Layer 4", "Layer 5", "Layer 6" }, 0));
     p.push_back (std::make_unique<APF> (juce::ParameterID { "layer_b_level", 1 }, "Also Play Level",
                  juce::NormalisableRange<float> (0.f, 1.f, 0.001f), 0.8f));
+    p.push_back (std::make_unique<APF> (juce::ParameterID { "layer_b_pan", 1 }, "Also Play Pan",
+                 juce::NormalisableRange<float> (-1.f, 1.f, 0.001f), 0.f,
+                 juce::AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int)
+                 {
+                     if (std::abs (v) < 0.005f) return juce::String ("Centre");
+                     return juce::String ((int) std::lround (std::abs (v) * 100.f)) + (v < 0.f ? "% L" : "% R");
+                 })));
     return { p.begin(), p.end() };
 }
 
@@ -207,6 +214,7 @@ void SuperParasitesAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     prm.switchStyle = (int) v ("switch_style");
     prm.layerB = (int) v ("layer_b");
     prm.layerBLevel = v ("layer_b_level");
+    prm.layerBPan = v ("layer_b_pan");
 
     // Record parameter: a rising edge starts recording into the selected layer, a falling edge stops it (the engine's call toggles).
     const bool recNow = v ("record") > 0.5f;

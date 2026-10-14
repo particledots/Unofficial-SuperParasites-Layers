@@ -38,6 +38,7 @@ public:
         int engineRate = 0;   // 0 = 32 kHz (the original), 1 = 48 kHz (HD)
         int layer = 0;        // 0 = Live (the always-recording buffer, as in HD); 1..kNumLayers = a stored layer
         int layerB = 0;              // a second layer played together with the first (0 = none, 1..kNumLayers); needs a layer-playing mode, and is ignored if it is the same as `layer`
+        float layerBPan = 0.0f;      // balance of the second layer: -1 left .. 0 centre (unchanged) .. +1 right
         float layerBLevel = 0.8f;    // its level, 0..1
         int switchStyle = 0;         // with Switch Time above 0: 0 = Dip (fade out, swap, fade in), 1 = Crossfade (the new layer is started on a second engine and the two are cross-faded)
         float switchTimeMs = 0.0f;   // layer switching: 0 = the short instant swap (24 ms mute); above 0 = fade out then fade in over this many ms in total
@@ -158,7 +159,7 @@ private:
     void xfFinish (const Params& p);
     void xfLoadIfReady();
     // Second layer together with the first: procB plays it, frozen, and its output is added to the main output.
-    int dualLayer = 0, dualWant = 0; float dualGain = 0.0f, dualLevel = 0.8f; bool dualRestart = false;
+    int dualLayer = 0, dualWant = 0; float dualGain = 0.0f, dualLevel = 0.8f, dualPan = 0.0f, dualPanS = 0.0f; bool dualRestart = false;
     void resetFade() { xfAbort(); dualLayer = 0; dualGain = 0.0f; dualRestart = false; switching = false; softFade = false; fadingIn = false; reloadNeeded = false; fadePos = 1.0f; fadeStep = 0.0f; gainPrev = gainNow = 1.0f; }
     // format of the stored layers, published for the UI thread
     std::atomic<bool> fmtValid { false }, fmtLowFi { false };

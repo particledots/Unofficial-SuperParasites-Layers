@@ -756,6 +756,28 @@ static void testTwoLayers (int engineRate, int mode)
     r.p.layerBLevel = 1.0f;
     level (kTone[2], 0.5);
 
+    {   // pan of the second layer: centre leaves it as it was; hard left / right move it to one side
+        Engine::Params keep = r.p;
+        std::vector<float> left, right;
+        auto grab = [&] (float pan) {
+            r.p.layerBPan = pan; r.run (0.5, 0.0);
+            const int N = 512; std::vector<float> in (N, 0.0f), oL (N), oR (N); left.clear(); right.clear();
+            for (int k = 0; k < (int) (0.4 * sr / N); ++k)
+            {
+                r.e.process (in.data(), in.data(), oL.data(), oR.data(), N, r.p);
+                left.insert (left.end(), oL.begin(), oL.end()); right.insert (right.end(), oR.begin(), oR.end());
+            }
+            const size_t n = left.size();
+            return std::make_pair (amplitudeAt (left, 0, n, kTone[2], sr), amplitudeAt (right, 0, n, kTone[2], sr));
+        };
+        const auto c = grab (0.0f), hl = grab (-1.0f), hr = grab (1.0f);
+        check (c.first > 0.2 * a1 && c.second > 0.2 * a1, "centre: the second layer is in both channels", c.first / a1);
+        check (hl.first > 0.8 * c.first && hl.second < 0.1 * c.first, "hard left: only the left channel", hl.second / c.first);
+        check (hr.second > 0.8 * c.second && hr.first < 0.1 * c.second, "hard right: only the right channel", hr.first / c.second);
+        const auto c2 = grab (0.0f);
+        check (std::fabs (c2.first - c.first) < 0.15 * c.first, "back to centre is as before", c2.first / c.first);
+        r.p = keep;
+    }
     r.p.layerB = 3;
     r.run (0.6, 0.0);
     check (level (kTone[3]) > 0.5 * a1, "changing the second layer plays the new one");

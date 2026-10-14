@@ -119,6 +119,14 @@ SuperParasitesEditor::SuperParasitesEditor (SuperParasitesAudioProcessor& p) : A
     layerBLevel.slider.setColour (juce::Slider::backgroundColourId, kTrack);
     layerBLevel.label.setJustificationType (juce::Justification::centredLeft);
     layerBLevel.slider.setTooltip ("Level of the second layer.");
+    addKnob (layerBPan, "layer_b_pan", "PAN");
+    layerBPan.slider.setSliderStyle (juce::Slider::LinearHorizontal);
+    layerBPan.slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
+    layerBPan.slider.setColour (juce::Slider::trackColourId, kAccent);
+    layerBPan.slider.setColour (juce::Slider::thumbColourId, kText);
+    layerBPan.slider.setColour (juce::Slider::backgroundColourId, kTrack);
+    layerBPan.label.setJustificationType (juce::Justification::centredLeft);
+    layerBPan.slider.setTooltip ("Where the second layer sits in the stereo picture (a balance: the centre leaves it exactly as it was). Double-click to centre.");
     addMenu (styleMenu, "switch_style", "SWITCH STYLE", { "Dip", "Crossfade" });
     styleMenu.label.setVisible (false);
     styleMenu.box.setTooltip ("Dip: the sound fades out, the layer is swapped, then it fades in. Crossfade: the new layer is started a moment earlier on a second engine and the two are faded over each other (more CPU while it lasts; the switch happens about 0.2 s after you change layer). Only used when Switch Time is above 0.");
@@ -429,7 +437,10 @@ void SuperParasitesEditor::resized()
     styleMenu.box.setBounds (W - 24 - 132, 614, 132, 26);
     layerBMenu.box.setBounds (124, 646, 150, 26);
     layerBLevel.label.setBounds (24, 648, 96, 22);
-    layerBLevel.slider.setBounds (286, 648, W - 286 - 24, 22);
+    const int lvW = (W - 286 - 24 - 56) / 2;
+    layerBLevel.slider.setBounds (286, 648, lvW, 22);
+    layerBPan.label.setBounds (286 + lvW + 6, 648, 44, 22);
+    layerBPan.slider.setBounds (286 + lvW + 50, 648, lvW, 22);
     layerStatusLabel.setBounds (24, 676, W - 48, 18);
     const int colW = (W - 48) / 2;
     for (int i = 0; i < SuperParasitesEngine::kNumLayers; ++i)

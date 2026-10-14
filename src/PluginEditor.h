@@ -52,7 +52,7 @@ private:
     juce::TextButton capture { "CAPTURE" };
     Menu layerMenu, styleMenu, layerBMenu;
     juce::TextButton recordLayer { "RECORD" }, clearLayer { "CLEAR" }, saveLayer { "SAVE WAV" }, loadLayer { "LOAD WAV" }, homeButton { "FOLDER..." };
-    Knob layerBLevel;                      // horizontal slider
+    Knob layerBLevel, layerBPan;                      // horizontal slider
     Knob switchTime;                       // drawn as a horizontal slider
     juce::Label layerStatusLabel, layerNote, ioLabel, homeLabel;
     juce::Label layerLines[SuperParasitesEngine::kNumLayers];

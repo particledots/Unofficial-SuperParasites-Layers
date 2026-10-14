@@ -34,6 +34,8 @@ There is a new **LAYER** menu with seven choices, plus **RECORD**, **CLEAR**, **
     the slider's level (a 20 ms ramp when it comes or goes). It is all-wet (it adds only the layer's own sound, not another copy of the live input). Ignored if it is the same layer as the
     selected one, if it is empty, or if the mode doesn't play layers. If you switch the main layer onto the one that is playing as the second, the second one stops (it can't play twice).
     CPU is roughly double while it is on. While it is on, the Crossfade style becomes a Dip (they use the same second engine). RECORD still records the selected (main) layer.
+  * **PAN** (next to the ALSO PLAY level, automatable): a balance for the second layer, from hard left to hard right. The centre leaves it exactly as it was (no change in level), and it is
+    smoothed so automation doesn't zipper. It only changes the gains of the second layer's output, so it costs no extra CPU.
   * **RECORD** is also a parameter, "Record" (on = recording, off = stopped), so a Logic automation lane or the button do the same thing; it switches itself off when the layer is full.
   * **SAVE WAV** writes the selected layer to a 16-bit WAV file (mono or stereo as the layer is, at the layer's own sample rate: the engine rate, or 16 kHz in the low-fi
     qualities; low-fi layers are decoded to 16-bit first) and **links the layer to that file** (see "Layer files" below). **LOAD WAV** puts a WAV file into the selected layer and links
@@ -126,7 +128,7 @@ how any of it sounds beyond that.
   and loses unsaved ones; a file that vanished before a format change ends as "missing" without retrying forever; restore waits for the engine to be ready; a save waits while no audio
   runs; four saves queued together all complete with different content. I broke the library on purpose in six places (no search by fingerprint; ignoring user edits; no reload after a
   format change; accepting a same-named file; not linking after a save; storing absolute paths only) and the tests failed each time.
-* `tests/layers_test.cpp`: 1295 checks, all pass (the 1227 of the fourth build plus two layers together).
+* `tests/layers_test.cpp`: 1311 checks, all pass (the 1227 of the fourth build plus two layers together and the pan: centre is in both channels, hard left only the left, hard right only the right, back to centre is as before).
   * *Two layers together (measured, not heard):* in Looping delay and Pitch shifter at both engine rates, with layer 1 selected and ALSO PLAY on layer 2 both tones are heard, level 0.3 gives
     a quieter second tone and level 0 silences it, changing the second layer replaces the old one, Off removes it and layer 1 carries on, the second layer is not doubled when it becomes the
     selected one, a Crossfade request while it is on becomes a Dip and still lands, an emptied second layer goes quiet, stored layers are unchanged.

@@ -257,11 +257,12 @@ void SuperParasitesEngine::runBlocks (const Params& p)
         else if (dualLayer > 0 && dualGain > 0.0f)
         {   // two layers together: the main output plus the second layer at its level
             const float gb = dualGain * dualLevel / 32768.0f;
+            const float gbl = gb * (1.0f - std::max (0.0f, dualPanS)), gbr = gb * (1.0f + std::min (0.0f, dualPanS));   // balance: centre = unchanged
             for (size_t i = 0; i < B; ++i)
             {
                 const float g = gainPrev + (gainNow - gainPrev) * (float) (i + 1) / (float) B;   // (1 unless a Dip is running)
-                procOutL.push_back ((float) out[i].l / 32768.0f * g + (float) outB[i].l * gb);
-                procOutR.push_back ((float) out[i].r / 32768.0f * g + (float) outB[i].r * gb);
+                procOutL.push_back ((float) out[i].l / 32768.0f * g + (float) outB[i].l * gbl);
+                procOutR.push_back ((float) out[i].r / 32768.0f * g + (float) outB[i].r * gbr);
             }
         }
         else if (gainPrev == 1.0f && gainNow == 1.0f)
@@ -530,6 +531,8 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
             wantB = p.layerB;
         dualWant = wantB;
         dualLevel = std::clamp (p.layerBLevel, 0.0f, 1.0f);
+        dualPan = std::clamp (p.layerBPan, -1.0f, 1.0f);
+        dualPanS += 0.05f * (dualPan - dualPanS);          // smoothed, so automation doesn't zipper
         const bool ok = dualLayer > 0 && dualWant == dualLayer && ! dualRestart && xfLoaded;
         const float goal = ok ? 1.0f : 0.0f;
         dualGain += std::clamp (goal - dualGain, -0.05f, 0.05f);
