@@ -726,6 +726,75 @@ static void testCrossfadeCost ()
     }
 }
 
+// ---- Q: two layers together ------------------------------------------------------------------------------------------------
+static void testTwoLayers (int engineRate, int mode)
+{
+    std::printf ("[Q] two layers together (engine %s, mode %d)\n", engineRate ? "48k" : "32k", mode);
+    const double sr = 48000.0;
+    Rig r (sr, engineRate, 0, 0, mode);
+    r.select (1); r.recordFull (kTone[1]);
+    r.select (2); r.recordFull (kTone[2]);
+    r.select (3); r.recordFull (kTone[3]);
+    r.select (1);
+    r.listen(); const double ref = r.lastRms;
+    auto level = [&] (double hz, double seconds = 0.6) {
+        auto o = r.run (seconds, 0.0);
+        return amplitudeAt (o, o.size() - (size_t) (0.3 * sr), (size_t) (0.3 * sr), hz, sr);
+    };
+    const double a1 = level (kTone[1]);
+    check (level (kTone[2]) < 0.05 * a1, "before: only layer 1 is heard");
+
+    r.p.layerB = 2; r.p.layerBLevel = 1.0f;
+    const double both1 = level (kTone[1], 0.8), both2 = level (kTone[2]);
+    check (both1 > 0.5 * a1, "layer 1 is still heard", both1 / a1);
+    check (both2 > 0.5 * a1, "layer 2 is heard together with it", both2 / a1);
+    r.p.layerBLevel = 0.3f;
+    const double low2 = level (kTone[2], 0.5);
+    check (low2 < 0.6 * both2 && low2 > 0.1 * both2, "the level control changes the second layer", low2 / both2);
+    r.p.layerBLevel = 0.0f;
+    check (level (kTone[2], 0.5) < 0.05 * a1, "level 0 silences it");
+    r.p.layerBLevel = 1.0f;
+    level (kTone[2], 0.5);
+
+    r.p.layerB = 3;
+    r.run (0.6, 0.0);
+    check (level (kTone[3]) > 0.5 * a1, "changing the second layer plays the new one");
+    check (level (kTone[2]) < 0.1 * a1, "and the old second layer is gone");
+
+    r.p.layerB = 0;
+    r.run (0.5, 0.0);
+    check (level (kTone[3]) < 0.05 * a1, "Off removes it");
+    check (level (kTone[1]) > 0.5 * a1, "and layer 1 carries on");
+
+    // same layer as the first: nothing extra. Switching the first onto the second one's layer turns the second off.
+    r.p.layerB = 2; r.run (0.8, 0.0);
+    r.p.layer = 2; r.run (0.8, 0.0);
+    check (level (kTone[1]) < 0.1 * a1, "after switching the first layer to layer 2 the first layer is gone");
+    const double withB = level (kTone[2]);
+    r.p.layerB = 0; r.run (0.5, 0.0);
+    const double alone = level (kTone[2]);
+    r.p.layerB = 2; r.run (0.5, 0.0);
+    check (alone > 0.2 * a1 && std::fabs (withB - alone) < 0.25 * alone, "layer 2 plays once, not doubled", withB / alone);
+    check (r.finite, "output stays finite");
+
+    // a Crossfade while the second layer is on becomes a Dip and still lands.
+    r.p.layer = 1; r.p.layerB = 3; r.run (0.8, 0.0);
+    r.p.switchTimeMs = 400.0f; r.p.switchStyle = 1;
+    r.p.layer = 2; r.run (0.15, 0.0);
+    check (! r.e.crossfading(), "no Crossfade while the second layer is on");
+    r.run (1.2, 0.0);
+    check (r.e.loadedLayer() == 2, "the switch still lands", r.e.loadedLayer());
+    check (level (kTone[3]) > 0.4 * a1, "the second layer is back after it");
+
+    // stored layers are untouched
+    check (hashOf (r.e.layerBytes (1, 0)) != hashOf (r.e.layerBytes (2, 0)), "stored layers unchanged");
+    // layer B emptied: it just goes quiet
+    r.p.switchTimeMs = 0.0f; r.p.layer = 1; r.run (0.6, 0.0);
+    r.p.layerB = 2; r.run (0.6, 0.0);
+    r.p.layer = 2; r.run (0.1, 0.0); r.e.clearLayer(); r.run (0.1, 0.0); r.p.layer = 1; r.run (0.6, 0.0);
+    check (level (kTone[2]) < 0.1 * a1, "an emptied layer is not played");
+}
+
 // ---- N: WAV files --------------------------------------------------------------------------------------------------------------
 static std::vector<uint8_t> wavBytes (int format, int ch, int bits, int rate, const std::vector<double>& interleaved, bool extensible = false)
 {
@@ -1090,6 +1159,7 @@ int main()
     testSwitchCost();
     for (int rate = 0; rate < 2; ++rate) testSwitchTime (rate);
     for (int rate = 0; rate < 2; ++rate) { testCrossfade (rate, Engine::LoopingDelay); testCrossfade (rate, Engine::PitchShifterStretch); testCrossfadeDipStillDips (rate); }
+    for (int rate = 0; rate < 2; ++rate) { testTwoLayers (rate, Engine::LoopingDelay); testTwoLayers (rate, Engine::PitchShifterStretch); }
     testCrossfadeCost();
     testCrossfadeSmoke (1, Engine::Granular); testCrossfadeSmoke (0, Engine::BeatRepeat);
     testWavFiles();

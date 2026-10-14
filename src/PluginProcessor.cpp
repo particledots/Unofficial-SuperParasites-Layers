@@ -64,6 +64,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout SuperParasitesAudioProcessor
     // a moment earlier and the two are cross-faded (about double the CPU while it lasts).
     p.push_back (std::make_unique<APC> (juce::ParameterID { "switch_style", 1 }, "Switch Style",
                  juce::StringArray { "Dip", "Crossfade" }, 0));
+    // A second layer played together with the first (on the second engine), and its level.
+    p.push_back (std::make_unique<APC> (juce::ParameterID { "layer_b", 1 }, "Also Play Layer",
+                 juce::StringArray { "Off", "Layer 1", "Layer 2", "Layer 3", "Layer 4", "Layer 5", "Layer 6" }, 0));
+    p.push_back (std::make_unique<APF> (juce::ParameterID { "layer_b_level", 1 }, "Also Play Level",
+                 juce::NormalisableRange<float> (0.f, 1.f, 0.001f), 0.8f));
     return { p.begin(), p.end() };
 }
 
@@ -200,6 +205,8 @@ void SuperParasitesAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     prm.layer = (int) v ("layer");
     prm.switchTimeMs = v ("switch_time");
     prm.switchStyle = (int) v ("switch_style");
+    prm.layerB = (int) v ("layer_b");
+    prm.layerBLevel = v ("layer_b_level");
 
     // Record parameter: a rising edge starts recording into the selected layer, a falling edge stops it (the engine's call toggles).
     const bool recNow = v ("record") > 0.5f;

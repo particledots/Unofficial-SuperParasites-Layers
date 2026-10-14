@@ -30,6 +30,10 @@ There is a new **LAYER** menu with seven choices, plus **RECORD**, **CLEAR**, **
     becomes the main one. Consequences: the switch happens about 0.2 s after you change layer; CPU is roughly double while a Crossfade lasts (0.2 s plus the Switch Time) and normal otherwise;
     RECORD is refused while a Crossfade is running; clearing or loading into the layer being faded to cancels the Crossfade (the old layer carries on); going to Live, or to an empty layer,
     or in a mode that doesn't play layers, uses the Dip instead. Memory use goes up by the size of one more engine (a few MB).
+  * **ALSO PLAY** (a menu: Off / Layer 1..6, plus a level slider; both automatable): plays a **second layer together with the selected one**, on the second engine, added to the main sound at
+    the slider's level (a 20 ms ramp when it comes or goes). It is all-wet (it adds only the layer's own sound, not another copy of the live input). Ignored if it is the same layer as the
+    selected one, if it is empty, or if the mode doesn't play layers. If you switch the main layer onto the one that is playing as the second, the second one stops (it can't play twice).
+    CPU is roughly double while it is on. While it is on, the Crossfade style becomes a Dip (they use the same second engine). RECORD still records the selected (main) layer.
   * **RECORD** is also a parameter, "Record" (on = recording, off = stopped), so a Logic automation lane or the button do the same thing; it switches itself off when the layer is full.
   * **SAVE WAV** writes the selected layer to a 16-bit WAV file (mono or stereo as the layer is, at the layer's own sample rate: the engine rate, or 16 kHz in the low-fi
     qualities; low-fi layers are decoded to 16-bit first) and **links the layer to that file** (see "Layer files" below). **LOAD WAV** puts a WAV file into the selected layer and links
@@ -122,7 +126,10 @@ how any of it sounds beyond that.
   and loses unsaved ones; a file that vanished before a format change ends as "missing" without retrying forever; restore waits for the engine to be ready; a save waits while no audio
   runs; four saves queued together all complete with different content. I broke the library on purpose in six places (no search by fingerprint; ignoring user edits; no reload after a
   format change; accepting a same-named file; not linking after a save; storing absolute paths only) and the tests failed each time.
-* `tests/layers_test.cpp`: 1227 checks, all pass (the 1119 of the third build plus the Crossfade).
+* `tests/layers_test.cpp`: 1295 checks, all pass (the 1227 of the fourth build plus two layers together).
+  * *Two layers together (measured, not heard):* in Looping delay and Pitch shifter at both engine rates, with layer 1 selected and ALSO PLAY on layer 2 both tones are heard, level 0.3 gives
+    a quieter second tone and level 0 silences it, changing the second layer replaces the old one, Off removes it and layer 1 carries on, the second layer is not doubled when it becomes the
+    selected one, a Crossfade request while it is on becomes a Dip and still lands, an emptied second layer goes quiet, stored layers are unchanged.
   * *Crossfade (measured, not heard):* switching layer 1 to 2 with Switch Time 800 ms and Switch Style Crossfade: in Looping delay and Pitch shifter at both engine rates the level never falls
     below 45 % of the steady level (the Dip falls below 10 %), for a while both layers' tones are present at the same time, afterwards only the new one; no step in the output; the first
     ~100 ms still play the old layer alone (the pre-roll); rapid back-and-forth ends on the last layer; RECORD is refused during it (including on the layer still playing); clearing the target
@@ -158,6 +165,7 @@ how any of it sounds beyond that.
 arm64 + x86_64 AU and VST3 build, ad-hoc signing, packaging and the `SuperParasites-Layers-macOS` artifact. (I can see each step's pass / fail result, not its log text.)
 
 **Not verified**
+* **ALSO PLAY (fifth build) in Logic and by ear:** how it sounds, Mac CPU with it on, and with its menu / level automated.
 * **The Crossfade by ear and in Logic** (fourth build): how it sounds, whether the 0.2 s delay and the extra CPU matter on your Macs, and how it behaves with a Layer automation lane.
 * **Switch Time measured, not heard.** In the test (four modes, Switch Time 800 ms, including your Granular settings) the fade-out and the fade-in are symmetric: the level is below
   half after about 130-200 ms, quietest at about 400 ms, back above half at about 600 ms and above 90 % by 670-720 ms (Pitch shifter, Looping delay, Beat repeat; Granular is too irregular
@@ -179,7 +187,7 @@ arm64 + x86_64 AU and VST3 build, ad-hoc signing, packaging and the `SuperParasi
 * The FEEDBACK / FREEZE behaviour of a playing layer and Beat repeat's slice source (from reading the code, not listened to).
 
 ## Planned
-* Several layers playing together (the Crossfade's second engine could be used for it).
+* More than two layers together (each extra one would need another engine and its CPU); maybe a pan or a separate level per layer.
 * Optionally embedding the audio in the preset / project (about 11.5 MB for six 10 s stereo layers at 48 kHz) as an alternative to file links.
 
 ## Source and licence

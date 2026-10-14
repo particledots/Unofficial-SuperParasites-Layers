@@ -221,12 +221,13 @@ void SuperParasitesEngine::runBlocks (const Params& p)
 
         // Crossfade: the second engine gets the same input and knob values as the first, and plays the incoming layer frozen.
         std::vector<XfFrame>& outB = xfOut;
-        if (xfState != 0)
+        if (xfState != 0 || dualLayer > 0)
         {
             Parameters* pb = procB->mutable_parameters();
             *pb = *prm;
             pb->freeze = (p.mode != BeatRepeat) ? true : p.freeze;
             pb->capture = false;
+            if (dualLayer > 0 && p.mode != BeatRepeat) pb->dry_wet = 1.0f;   // the second layer adds only its own sound, not another copy of the live input
             procB->set_playback_mode ((PlaybackMode) std::clamp (p.mode, 0, (int) PLAYBACK_MODE_LAST - 1));
             procB->set_quality (std::clamp (p.quality, 0, 3));
             procB->set_hold_writes (true);
@@ -251,6 +252,16 @@ void SuperParasitesEngine::runBlocks (const Params& p)
                 const float a = std::cos (1.57079632679f * x), b = std::sin (1.57079632679f * x);
                 procOutL.push_back (((float) out[i].l * a + (float) outB[i].l * b) / 32768.0f);
                 procOutR.push_back (((float) out[i].r * a + (float) outB[i].r * b) / 32768.0f);
+            }
+        }
+        else if (dualLayer > 0 && dualGain > 0.0f)
+        {   // two layers together: the main output plus the second layer at its level
+            const float gb = dualGain * dualLevel / 32768.0f;
+            for (size_t i = 0; i < B; ++i)
+            {
+                const float g = gainPrev + (gainNow - gainPrev) * (float) (i + 1) / (float) B;   // (1 unless a Dip is running)
+                procOutL.push_back ((float) out[i].l / 32768.0f * g + (float) outB[i].l * gb);
+                procOutR.push_back ((float) out[i].r / 32768.0f * g + (float) outB[i].r * gb);
             }
         }
         else if (gainPrev == 1.0f && gainNow == 1.0f)
@@ -473,9 +484,17 @@ void SuperParasitesEngine::xfLoadIfReady()
     if (gen != xfGeneration) { xfGeneration = gen; xfLoaded = false; }   // B rebuilt its memory (mode / quality settled)
     if (! xfLoaded && procB->samples_valid())
     {
-        loadLayerInto (*procB, xfTarget);
+        loadLayerInto (*procB, dualLayer > 0 ? dualLayer : xfTarget);
         xfLoaded = true;
     }
+}
+
+void SuperParasitesEngine::xfStartDual (int layer)
+{
+    Params q; q.switchTimeMs = 1.0f;           // (only the fade length is read by xfStart)
+    xfStart (q, layer);
+    xfState = 0;                                // the second engine runs for the second layer, not for a Crossfade
+    dualLayer = layer;
 }
 
 void SuperParasitesEngine::xfFinish (const Params& p)
@@ -503,6 +522,28 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
 
     // A Crossfade is abandoned (the old layer simply carries on) if its target is emptied or the mode stops using layers.
     if (xfState != 0 && (! modeUsesLayers (mode) || xfTarget < 1 || ! layers[xfTarget - 1].filled)) xfAbort();
+
+    // Second layer together with the first (Layer B): which one should be playing, and ramps its level up or down (20 ms).
+    {
+        int wantB = 0;
+        if (modeUsesLayers (mode) && p.layerB >= 1 && p.layerB <= kNumLayers && p.layerB != wanted && layers[p.layerB - 1].filled && xfState == 0 && valid)
+            wantB = p.layerB;
+        dualWant = wantB;
+        dualLevel = std::clamp (p.layerBLevel, 0.0f, 1.0f);
+        const bool ok = dualLayer > 0 && dualWant == dualLayer && ! dualRestart && xfLoaded;
+        const float goal = ok ? 1.0f : 0.0f;
+        dualGain += std::clamp (goal - dualGain, -0.05f, 0.05f);
+        if (dualGain <= 0.0f && ! ok)
+        {
+            dualGain = 0.0f;
+            if (dualWant > 0 && xfState == 0 && (dualLayer != dualWant || dualRestart))
+            {
+                xfStartDual (dualWant);          // (re)start the second engine on the layer
+            }
+            else if (dualWant == 0) dualLayer = 0;
+            dualRestart = false;
+        }
+    }
 
     // Clear request: empties the selected layer.
     if (clearRequested.exchange (false) && wanted > 0)
@@ -571,7 +612,7 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
     {
         if (recording) finishRecording();           // changing layer while recording keeps what was recorded
         if (p.switchStyle == 1 && switchMs > 0 && target > 0 && layers[target - 1].filled && ! reloadNeeded && fadePos >= 1.0f
-            && ! fadingIn)
+            && ! fadingIn && dualLayer == 0)
         {
             xfStart (p, target);                    // the incoming layer starts playing on the second engine; the fade comes after the pre-roll
         }
@@ -749,6 +790,7 @@ void SuperParasitesEngine::serviceTransfers()
             L.seconds = (float) ((double) importFrames / fmtRate.load());
             L.filled = true;
             bump (ly, false);
+            if (dualLayer == ly) dualRestart = true;          // it is playing as the second layer: restart that with the new audio
             if (xfState != 0 && xfTarget == ly) xfAbort();   // a Crossfade towards this layer would play the old audio
             if (loadedLayerIdx == ly) reloadNeeded = true;    // it is playing now: swap the new audio in with the usual fade
             publishLayers();

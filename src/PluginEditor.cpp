@@ -108,6 +108,17 @@ SuperParasitesEditor::SuperParasitesEditor (SuperParasitesAudioProcessor& p) : A
     capture.setColour (juce::TextButton::textColourOffId, kText);
     addAndMakeVisible (capture);
 
+    addMenu (layerBMenu, "layer_b", "ALSO PLAY", { "Off", "Layer 1", "Layer 2", "Layer 3", "Layer 4", "Layer 5", "Layer 6" });
+    layerBMenu.label.setVisible (false);
+    layerBMenu.box.setTooltip ("Plays a second layer together with the selected one (on the second engine, so the CPU use goes up while it is on). Ignored if it is the same layer, empty, or the mode doesn't play layers. A Crossfade becomes a Dip while this is on.");
+    addKnob (layerBLevel, "layer_b_level", "ALSO PLAY");
+    layerBLevel.slider.setSliderStyle (juce::Slider::LinearHorizontal);
+    layerBLevel.slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
+    layerBLevel.slider.setColour (juce::Slider::trackColourId, kAccent);
+    layerBLevel.slider.setColour (juce::Slider::thumbColourId, kText);
+    layerBLevel.slider.setColour (juce::Slider::backgroundColourId, kTrack);
+    layerBLevel.label.setJustificationType (juce::Justification::centredLeft);
+    layerBLevel.slider.setTooltip ("Level of the second layer.");
     addMenu (styleMenu, "switch_style", "SWITCH STYLE", { "Dip", "Crossfade" });
     styleMenu.label.setVisible (false);
     styleMenu.box.setTooltip ("Dip: the sound fades out, the layer is swapped, then it fades in. Crossfade: the new layer is started a moment earlier on a second engine and the two are faded over each other (more CPU while it lasts; the switch happens about 0.2 s after you change layer). Only used when Switch Time is above 0.");
@@ -178,7 +189,7 @@ SuperParasitesEditor::SuperParasitesEditor (SuperParasitesAudioProcessor& p) : A
         *proc.apvts.getParameter ("mode"), [this] (float v) { updateHint ((int) v); });
     modeWatch->sendInitialUpdate();
 
-    setSize (660, 830);
+    setSize (660, 860);
 }
 
 SuperParasitesEditor::~SuperParasitesEditor() { stopTimer(); setLookAndFeel (nullptr); }
@@ -416,11 +427,14 @@ void SuperParasitesEditor::resized()
     switchTime.label.setBounds (24, 616, 96, 22);
     switchTime.slider.setBounds (124, 616, W - 124 - 24 - 140, 22);
     styleMenu.box.setBounds (W - 24 - 132, 614, 132, 26);
-    layerStatusLabel.setBounds (24, 644, W - 48, 18);
+    layerBMenu.box.setBounds (124, 646, 150, 26);
+    layerBLevel.label.setBounds (24, 648, 96, 22);
+    layerBLevel.slider.setBounds (286, 648, W - 286 - 24, 22);
+    layerStatusLabel.setBounds (24, 676, W - 48, 18);
     const int colW = (W - 48) / 2;
     for (int i = 0; i < SuperParasitesEngine::kNumLayers; ++i)
-        layerLines[i].setBounds (24 + (i / 3) * colW, 664 + (i % 3) * 17, colW - 6, 17);
-    homeLabel.setBounds (24, 718, W - 48, 16);
-    ioLabel.setBounds (24, 736, W - 48, 18);
-    layerNote.setBounds (24, 756, W - 48, 58);
+        layerLines[i].setBounds (24 + (i / 3) * colW, 696 + (i % 3) * 17, colW - 6, 17);
+    homeLabel.setBounds (24, 750, W - 48, 16);
+    ioLabel.setBounds (24, 768, W - 48, 18);
+    layerNote.setBounds (24, 788, W - 48, 58);
 }
