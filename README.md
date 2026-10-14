@@ -24,8 +24,12 @@ There is a new **LAYER** menu with seven choices, plus **RECORD**, **CLEAR**, **
     stored in the layers.
   * **SWITCH TIME** (0 to 2 s, automatable): above *Instant*, the sound fades out over half the time, the layer is swapped, and it fades back in over the other half
     (raised-cosine fades, so a setting of 800 ms is a dip of 800 ms in total). It is a dip through quiet, not an overlap of the two layers: the old layer is gone before
-    the new one starts. A true overlap needs a second engine playing at the same time and is not in this version. If you ask for another layer while a fade is running it
-    carries on from where the level is.
+    the new one starts. If you ask for another layer while a fade is running it carries on from where the level is.
+  * **SWITCH STYLE** (automatable; only used when Switch Time is above Instant): *Dip* is the fade described above. *Crossfade* starts the incoming layer on a **second engine** about 0.2 s
+    before the fade (so its sound is already running, not starting from nothing), then fades the old layer out and the new one in over the Switch Time, at equal power, then the second engine
+    becomes the main one. Consequences: the switch happens about 0.2 s after you change layer; CPU is roughly double while a Crossfade lasts (0.2 s plus the Switch Time) and normal otherwise;
+    RECORD is refused while a Crossfade is running; clearing or loading into the layer being faded to cancels the Crossfade (the old layer carries on); going to Live, or to an empty layer,
+    or in a mode that doesn't play layers, uses the Dip instead. Memory use goes up by the size of one more engine (a few MB).
   * **RECORD** is also a parameter, "Record" (on = recording, off = stopped), so a Logic automation lane or the button do the same thing; it switches itself off when the layer is full.
   * **SAVE WAV** writes the selected layer to a 16-bit WAV file (mono or stereo as the layer is, at the layer's own sample rate: the engine rate, or 16 kHz in the low-fi
     qualities; low-fi layers are decoded to 16-bit first) and **links the layer to that file** (see "Layer files" below). **LOAD WAV** puts a WAV file into the selected layer and links
@@ -118,7 +122,14 @@ how any of it sounds beyond that.
   and loses unsaved ones; a file that vanished before a format change ends as "missing" without retrying forever; restore waits for the engine to be ready; a save waits while no audio
   runs; four saves queued together all complete with different content. I broke the library on purpose in six places (no search by fingerprint; ignoring user edits; no reload after a
   format change; accepting a same-named file; not linking after a save; storing absolute paths only) and the tests failed each time.
-* `tests/layers_test.cpp`: 1119 checks, all pass (the 1109 of the second build plus the layer revision / edit counters).
+* `tests/layers_test.cpp`: 1227 checks, all pass (the 1119 of the third build plus the Crossfade).
+  * *Crossfade (measured, not heard):* switching layer 1 to 2 with Switch Time 800 ms and Switch Style Crossfade: in Looping delay and Pitch shifter at both engine rates the level never falls
+    below 45 % of the steady level (the Dip falls below 10 %), for a while both layers' tones are present at the same time, afterwards only the new one; no step in the output; the first
+    ~100 ms still play the old layer alone (the pre-roll); rapid back-and-forth ends on the last layer; RECORD is refused during it (including on the layer still playing); clearing the target
+    cancels it; Dip is unchanged; Live and empty targets fall back to the Dip. Granular and Beat repeat: only the mechanics (starts, ends on the new layer, stays finite, layers untouched).
+    I broke the Crossfade on purpose in seven places (the second engine not given the layer; the old layer not faded out; no pre-roll; style ignored; no hand-over at the end; recording allowed
+    during it; clearing the target not cancelling) and the tests failed each time. Cost on this Linux machine: slowest 512-sample call around Crossfades 1.4 ms (10 s layers) and 3.0 ms (20 s layers),
+    against 0.2 ms normally (a call of that size is 10.7 ms of audio). **Mac CPU is not measured.**
   * *Layers (as before):* six layers record six different tones and each plays its own tone back through 12 switches in a mixed order; stored audio is unchanged by switching;
     trips through the four non-layer modes return the layer; Live leaves the layers alone; CLEAR, re-record, early stop, format changes, all four qualities, nothing overwrites a playing layer
     (Beat repeat output identical with silent and loud live input), six 10 s layers store the calculated number of bytes (7.68 MB at the 32 kHz engine, 11.52 MB at 48 kHz).
@@ -136,7 +147,7 @@ how any of it sounds beyond that.
   * I broke the code on purpose in six places (live input overwriting a playing layer; not restoring a layer after a mode trip; no Switch Time fade; no resampler delay compensation;
     not swapping in a layer loaded into the playing layer; no interpolation tail on loaded audio) and the tests failed each time.
 * **Live equals HD.** `tests/live_dump.cpp` hashes the output for every mode x quality x Buffer Length (1 s, 10 s) x engine rate: 128 combinations, 4 s each. Built from this code and from
-  the HD plug-in at commit `aaa28f5` the 128 lines are identical (re-run after Switch Time and Save / Load were added; also run in the workflow).
+  the HD plug-in at commit `aaa28f5` the 128 lines are identical (re-run after Switch Time, Save / Load and the Crossfade were added; also run in the workflow).
 * The existing suites pass unchanged: `engine_test` and `rate_compare_test`.
 * The plug-in and editor sources compile against the JUCE 8.0.6 headers (syntax check, Linux, no warnings; checked that it does report a deliberate error).
 * Cost of a layer switch on this Linux machine: slowest 512-sample `process()` call while switching 0.5 ms with 10 s layers and 1.0 ms with 20 s layers (48 kHz stereo).
@@ -145,6 +156,7 @@ how any of it sounds beyond that.
 arm64 + x86_64 AU and VST3 build, ad-hoc signing, packaging and the `SuperParasites-Layers-macOS` artifact. (I can see each step's pass / fail result, not its log text.)
 
 **Not verified**
+* **The Crossfade by ear and in Logic** (fourth build): how it sounds, whether the 0.2 s delay and the extra CPU matter on your Macs, and how it behaves with a Layer automation lane.
 * **Switch Time measured, not heard.** In the test (four modes, Switch Time 800 ms, including your Granular settings) the fade-out and the fade-in are symmetric: the level is below
   half after about 130-200 ms, quietest at about 400 ms, back above half at about 600 ms and above 90 % by 670-720 ms (Pitch shifter, Looping delay, Beat repeat; Granular is too irregular
   to put numbers on, but its envelope follows the same shape). So the "quick out, slow in" you heard is not a difference in the two fades in the engine; the fade is a dip, not a morph.
@@ -165,8 +177,7 @@ arm64 + x86_64 AU and VST3 build, ad-hoc signing, packaging and the `SuperParasi
 * The FEEDBACK / FREEZE behaviour of a playing layer and Beat repeat's slice source (from reading the code, not listened to).
 
 ## Planned
-* A true crossfade between layers (Switch Time style: Instant / Dip / Crossfade): start a second engine on the new layer a few hundred milliseconds before the fade so its sound is already
-  running, then cross-fade the two. CPU roughly doubles only during the transition. Several layers playing together needs the same second engine.
+* Several layers playing together (the Crossfade's second engine could be used for it).
 * Optionally embedding the audio in the preset / project (about 11.5 MB for six 10 s stereo layers at 48 kHz) as an alternative to file links.
 
 ## Source and licence

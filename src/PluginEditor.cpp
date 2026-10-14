@@ -108,6 +108,9 @@ SuperParasitesEditor::SuperParasitesEditor (SuperParasitesAudioProcessor& p) : A
     capture.setColour (juce::TextButton::textColourOffId, kText);
     addAndMakeVisible (capture);
 
+    addMenu (styleMenu, "switch_style", "SWITCH STYLE", { "Dip", "Crossfade" });
+    styleMenu.label.setVisible (false);
+    styleMenu.box.setTooltip ("Dip: the sound fades out, the layer is swapped, then it fades in. Crossfade: the new layer is started a moment earlier on a second engine and the two are faded over each other (more CPU while it lasts; the switch happens about 0.2 s after you change layer). Only used when Switch Time is above 0.");
     addMenu (layerMenu, "layer", "LAYER", { "Live", "Layer 1", "Layer 2", "Layer 3", "Layer 4", "Layer 5", "Layer 6" });
     recordLayer.onClick = [this]
     {   // RECORD is the automatable "Record" parameter, so the button and a Logic automation lane do the same thing
@@ -411,7 +414,8 @@ void SuperParasitesEditor::resized()
     loadLayer.setBounds (442, 582, 84, 26);
     homeButton.setBounds (532, 582, W - 532 - 24, 26);
     switchTime.label.setBounds (24, 616, 96, 22);
-    switchTime.slider.setBounds (124, 616, W - 124 - 24, 22);
+    switchTime.slider.setBounds (124, 616, W - 124 - 24 - 140, 22);
+    styleMenu.box.setBounds (W - 24 - 132, 614, 132, 26);
     layerStatusLabel.setBounds (24, 644, W - 48, 18);
     const int colW = (W - 48) / 2;
     for (int i = 0; i < SuperParasitesEngine::kNumLayers; ++i)

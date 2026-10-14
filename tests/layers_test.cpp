@@ -580,6 +580,152 @@ static void testSwitchTime (int engineRate)
     check (r.listen() == 2, "and back to a layer");
 }
 
+// ---- P: Crossfade --------------------------------------------------------------------------------------------------------------
+static void testCrossfade (int engineRate, int mode)
+{
+    std::printf ("[P] Crossfade (engine %s, mode %d)\n", engineRate ? "48k" : "32k", mode);
+    const double sr = 48000.0;
+    Rig r (sr, engineRate, 0, 0, mode);
+    r.select (1); r.recordFull (kTone[1]);
+    r.select (2); r.recordFull (kTone[2]);
+    r.select (1);
+    check (r.listen() == 1, "layer 1 plays before the switch");
+    const double ref = r.lastRms;
+    check (ref > 0.05, "layer 1 is audible", ref);
+
+    r.p.switchTimeMs = 800.0f; r.p.switchStyle = 1;
+    r.maxStep = 0.0;
+    r.p.layer = 2;
+    auto o = r.run (1.8, 0.0);
+    const auto e = envelope (o, sr, 20.0);
+    // (1) it never dips: from the start of the move to the end, no 20 ms window falls below 45 % of the steady level
+    //     (the Dip style goes below 10 %)
+    double lowest = 1e9; for (size_t i = 5; i < e.size(); ++i) lowest = std::min (lowest, e[i]);
+    check (lowest > 0.45 * ref, "the level never dips during a Crossfade", lowest / ref);
+    // (2) both layers are heard together at some moment, then only the new one
+    double both = 0; size_t seen = 0;
+    for (size_t at = (size_t) (0.15 * sr); at + 4800 <= o.size(); at += 2400)
+    {
+        const double a1 = amplitudeAt (o, at, 4800, kTone[1], sr), a2 = amplitudeAt (o, at, 4800, kTone[2], sr);
+        if (a1 > 0.25 * ref && a2 > 0.25 * ref) { ++seen; both = std::max (both, std::min (a1, a2) / ref); }
+    }
+    check (seen >= 3, "for a while both layers are audible together", (double) seen);
+    std::vector<float> tail (o.end() - (long) (0.3 * sr), o.end());
+    check (strongestTone (tail, tail.size(), sr) == 2, "after the fade only the new layer plays");
+    check (r.e.loadedLayer() == 2, "the engine reports the new layer", r.e.loadedLayer());
+    check (! r.e.crossfading(), "the second engine is idle again");
+    check (r.maxStep < 0.12, "no step in the output", r.maxStep);
+    check (r.finite, "output stays finite");
+    // (3) the fade-in is not slower than the fade-out: when layer 1 is half gone, layer 2 is already about half there
+    check (std::fabs (rms (tail, tail.size()) - ref) < 0.5 * ref, "back at the normal level afterwards", rms (tail, tail.size()) / ref);
+
+    // The switch takes place after the pre-roll, not before it: the first 100 ms still hold layer 1 alone.
+    r.p.layer = 1; r.run (2.0, 0.0);
+    r.p.layer = 2;
+    auto o2 = r.run (0.1, 0.0);
+    check (strongestTone (o2, o2.size(), sr) == 1, "the first 100 ms still play the old layer (pre-roll)");
+    {   // ...and the new layer is not heard at all yet (it is only running in the background): allow the engine's own latency
+        const double leak = amplitudeAt (o2, (size_t) (0.02 * sr), (size_t) (0.07 * sr), kTone[2], sr);
+        check (leak < 0.06 * ref, "the new layer is not audible during the pre-roll", leak / ref);
+    }
+
+    // Back-and-forth: ends on the last asked for, not stuck, engine idle.
+    r.run (2.0, 0.0);
+    r.p.switchTimeMs = 300.0f;
+    r.p.layer = 1; r.run (0.4, 0.0); r.p.layer = 2; r.run (0.1, 0.0); r.p.layer = 1; r.run (2.0, 0.0);
+    check (r.listen() == 1, "rapid back and forth lands on the last layer");
+    check (r.lastRms > 0.6 * ref, "at the normal level", r.lastRms / ref);
+    check (! r.e.crossfading(), "and the second engine is idle");
+
+    // Recording is ignored while a Crossfade is under way (and the old layer is untouched).
+    r.p.switchTimeMs = 800.0f; r.p.layer = 2; r.run (0.05, 0.0);
+    check (r.e.crossfading(), "a Crossfade is under way");
+    r.e.recordLayer(); r.run (0.05, 0.0);
+    check (r.e.layerStatus (1).state == Engine::LayerFilled && r.e.layerStatus (2).state == Engine::LayerFilled, "recording is refused during a Crossfade");
+    r.p.layer = 1; r.run (0.02, 0.0);   // asked to go back to the layer that is still playing, while the Crossfade runs on
+    r.e.recordLayer(); r.run (0.05, 0.0);
+    check (r.e.layerStatus (1).state == Engine::LayerFilled, "recording the still-playing layer is refused during a Crossfade too");
+    r.p.layer = 2; r.run (0.5, 0.0);
+    r.run (2.0, 0.0);
+
+    // Clearing the layer being faded to abandons the Crossfade; the old layer carries on.
+    r.p.layer = 1; r.run (2.0, 0.0);
+    r.p.layer = 2; r.run (0.05, 0.0);
+    check (r.e.crossfading(), "a Crossfade towards layer 2 starts");
+    // (select layer 2 is already set; clear applies to the selected layer = the one being faded to)
+    r.e.clearLayer(); r.run (0.1, 0.0);
+    check (! r.e.crossfading(), "clearing the target abandons it");
+    r.run (1.5, 0.0);
+    check (r.finite, "output stays finite after the abandoned Crossfade");
+
+}
+
+static void testCrossfadeDipStillDips (int engineRate)
+{
+    std::printf ("[P2] Dip style still dips, and Crossfade falls back to Dip where it cannot run (engine %s)\n", engineRate ? "48k" : "32k");
+    const double sr = 48000.0;
+    Rig r (sr, engineRate, 0, 0, Engine::LoopingDelay);
+    r.select (1); r.recordFull (kTone[1]);
+    r.select (2); r.recordFull (kTone[2]);
+    r.select (1); r.listen(); const double ref = r.lastRms;
+    r.p.switchTimeMs = 800.0f; r.p.switchStyle = 0;
+    r.p.layer = 2; auto o = r.run (1.6, 0.0);
+    const auto e = envelope (o, sr, 20.0);
+    double lowest = 1e9; for (double v : e) lowest = std::min (lowest, v);
+    check (lowest < 0.1 * ref, "Dip goes nearly silent", lowest / ref);
+    // Crossfade to Live (nothing recorded there to play) is a Dip.
+    r.p.switchStyle = 1; r.p.layer = 0; r.run (1.6, 0.0);
+    check (r.e.loadedLayer() == 0 && ! r.e.crossfading(), "going to Live works with the Crossfade style");
+    // Crossfade to an empty layer is a Dip too, and nothing gets stuck.
+    r.p.layer = 3; r.run (1.6, 0.0);
+    check (! r.e.crossfading() && r.finite, "an empty target does not start a Crossfade");
+    r.p.layer = 1; r.run (2.0, 0.0);
+    check (r.listen() == 1, "and a Crossfade works afterwards");
+}
+
+// Modes whose output is irregular (Granular) or has its own rhythm (Beat repeat): only the mechanics are checked.
+static void testCrossfadeSmoke (int engineRate, int mode)
+{
+    std::printf ("[P3] Crossfade mechanics in mode %d (engine %s)\n", mode, engineRate ? "48k" : "32k");
+    Rig r (48000.0, engineRate, 0, 0, mode);
+    r.p.density = 0.9f;
+    r.select (1); r.recordFull (kTone[1]);
+    r.select (2); r.recordFull (kTone[2]);
+    r.select (1); r.run (1.0, 0.0);
+    r.p.switchTimeMs = 600.0f; r.p.switchStyle = 1;
+    r.maxStep = 0.0;
+    r.p.layer = 2; r.run (0.1, 0.0);
+    check (r.e.crossfading(), "the Crossfade starts");
+    r.run (1.5, 0.0);
+    check (! r.e.crossfading(), "and ends");
+    check (r.e.loadedLayer() == 2, "on the new layer", r.e.loadedLayer());
+    check (r.finite, "output stays finite");
+    r.p.layer = 1; r.run (1.5, 0.0);
+    check (r.e.loadedLayer() == 1 && ! r.e.crossfading(), "and back again");
+    check (hashOf (r.e.layerBytes (1, 0)) != hashOf (r.e.layerBytes (2, 0)), "stored layers are untouched and still different");
+}
+
+static void testCrossfadeCost ()
+{
+    std::printf ("[P4] cost of a Crossfade\n");
+    for (int len : { 2, 3 })
+    {
+        Rig r (48000.0, 1, 0, len, Engine::LoopingDelay);
+        r.select (1); r.recordFull (kTone[1], 25.0);
+        r.select (2); r.recordFull (kTone[2], 25.0);
+        r.select (1); r.run (0.5, 0.0);
+        r.maxCallMs = 0; r.run (1.0, 0.0);
+        const double idle = r.maxCallMs;
+        r.p.switchTimeMs = 800.0f; r.p.switchStyle = 1;
+        r.maxCallMs = 0;
+        for (int i = 0; i < 4; ++i) { r.p.layer = 1 + ((i + 1) % 2); r.run (1.6, 0.0); }
+        std::printf("    %.0f s layers, 48 kHz stereo: slowest process() call: %.2f ms normally, %.2f ms around Crossfades (512-sample calls = 10.7 ms of audio)\n",
+                    Engine::bufferSeconds (len), idle, r.maxCallMs);
+        check (r.maxCallMs < 100.0, "a Crossfade does not stall for long on this machine", r.maxCallMs);
+        check (r.e.loadedLayer() == 2 || r.e.loadedLayer() == 1, "and ends on a layer");
+    }
+}
+
 // ---- N: WAV files --------------------------------------------------------------------------------------------------------------
 static std::vector<uint8_t> wavBytes (int format, int ch, int bits, int rate, const std::vector<double>& interleaved, bool extensible = false)
 {
@@ -943,6 +1089,9 @@ int main()
     testRecordIgnoredInLive();
     testSwitchCost();
     for (int rate = 0; rate < 2; ++rate) testSwitchTime (rate);
+    for (int rate = 0; rate < 2; ++rate) { testCrossfade (rate, Engine::LoopingDelay); testCrossfade (rate, Engine::PitchShifterStretch); testCrossfadeDipStillDips (rate); }
+    testCrossfadeCost();
+    testCrossfadeSmoke (1, Engine::Granular); testCrossfadeSmoke (0, Engine::BeatRepeat);
     testWavFiles();
     for (int rate = 0; rate < 2; ++rate) for (int q = 0; q < 4; ++q) testSaveLoad (rate, q);
     testImportAlignment();

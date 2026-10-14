@@ -60,6 +60,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout SuperParasitesAudioProcessor
                          const float x = t.getFloatValue();
                          return t.endsWith ("ms") ? x : (t.endsWith ("s") ? x * 1000.f : x);
                      })));
+    // How a switch with Switch Time above 0 sounds: Dip = fade out, swap, fade in; Crossfade = the new layer is started on a second engine
+    // a moment earlier and the two are cross-faded (about double the CPU while it lasts).
+    p.push_back (std::make_unique<APC> (juce::ParameterID { "switch_style", 1 }, "Switch Style",
+                 juce::StringArray { "Dip", "Crossfade" }, 0));
     return { p.begin(), p.end() };
 }
 
@@ -195,6 +199,7 @@ void SuperParasitesAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     prm.engineRate = (int) v ("engine_rate");
     prm.layer = (int) v ("layer");
     prm.switchTimeMs = v ("switch_time");
+    prm.switchStyle = (int) v ("switch_style");
 
     // Record parameter: a rising edge starts recording into the selected layer, a falling edge stops it (the engine's call toggles).
     const bool recNow = v ("record") > 0.5f;

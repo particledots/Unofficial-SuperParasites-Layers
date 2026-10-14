@@ -50,7 +50,7 @@ private:
     Menu mode, quality, bufferLength, engineRate;
     juce::ToggleButton freeze { "FREEZE" }, reverse { "REVERSE" }, gate { "GATE" }, pitchMidi { "PITCH FOLLOWS MIDI" };
     juce::TextButton capture { "CAPTURE" };
-    Menu layerMenu;
+    Menu layerMenu, styleMenu;
     juce::TextButton recordLayer { "RECORD" }, clearLayer { "CLEAR" }, saveLayer { "SAVE WAV" }, loadLayer { "LOAD WAV" }, homeButton { "FOLDER..." };
     Knob switchTime;                       // drawn as a horizontal slider
     juce::Label layerStatusLabel, layerNote, ioLabel, homeLabel;

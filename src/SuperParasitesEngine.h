@@ -37,6 +37,7 @@ public:
         int bufferLength = 0; // index into bufferSeconds(): how much sample memory the recording buffer gets (Extended)
         int engineRate = 0;   // 0 = 32 kHz (the original), 1 = 48 kHz (HD)
         int layer = 0;        // 0 = Live (the always-recording buffer, as in HD); 1..kNumLayers = a stored layer
+        int switchStyle = 0;         // with Switch Time above 0: 0 = Dip (fade out, swap, fade in), 1 = Crossfade (the new layer is started on a second engine and the two are cross-faded)
         float switchTimeMs = 0.0f;   // layer switching: 0 = the short instant swap (24 ms mute); above 0 = fade out then fade in over this many ms in total
     };
 
@@ -73,6 +74,8 @@ public:
     uint32_t layerEditCount (int layer) const { return uiEdit[layer - 1].load(); }
     int loadedLayer() const { return uiLoaded.load(); }   // which layer's audio the engine is playing (0 = Live)
     static constexpr float kMaxSwitchMs = 2000.0f;
+    static constexpr int kCrossfadePrerollMs = 200;   // a Crossfade starts the incoming layer this long before the fade, so it is already playing
+    bool crossfading() const { return xfState != 0; }  // audio thread / tests
 
     // ---- Saving and loading a layer's audio as WAV (UI thread; the audio thread does the hand-over, so nothing here blocks it) ----
     // The format layers are stored in right now (depends on Quality, Buffer Length and Engine Rate).
@@ -140,7 +143,18 @@ private:
     // soft switch (Switch Time > 0): own gain ramp on the output, fade out -> swap -> fade in
     bool softFade = false, fadingIn = false, reloadNeeded = false;
     float fadePos = 1.0f, fadeStep = 0.0f, gainPrev = 1.0f, gainNow = 1.0f;
-    void resetFade() { switching = false; softFade = false; fadingIn = false; reloadNeeded = false; fadePos = 1.0f; fadeStep = 0.0f; gainPrev = gainNow = 1.0f; }
+    // Crossfade: a second processor (procB) plays the incoming layer; states 0 idle, 1 pre-roll (B runs, output still A), 2 fading
+    std::unique_ptr<clouds::GranularProcessor> procB;
+    std::vector<uint64_t> largeBufB, smallBufB;
+    int xfState = 0, xfTarget = 0, xfPrerollLeft = 0, xfFadeBlocks = 1, xfFadeDone = 0;
+    bool xfLoaded = false; int32_t xfGeneration = 0;
+    struct XfFrame { short l, r; };
+    std::vector<XfFrame> xfOut;           // same layout as the processor's ShortFrame
+    void xfStart (const Params& p, int target);
+    void xfAbort();
+    void xfFinish (const Params& p);
+    void xfLoadIfReady();
+    void resetFade() { xfAbort(); switching = false; softFade = false; fadingIn = false; reloadNeeded = false; fadePos = 1.0f; fadeStep = 0.0f; gainPrev = gainNow = 1.0f; }
     // format of the stored layers, published for the UI thread
     std::atomic<bool> fmtValid { false }, fmtLowFi { false };
     std::atomic<int> fmtChannels { 2 }, fmtCap { 0 };
@@ -159,7 +173,8 @@ private:
     void layersBeforeBlock (const Params& p);      // requests, layer switching, hold/freeze flags (once per 1 ms block)
     void layersAfterProcess();                     // notices a finished recording
     void layersAfterPrepare (const Params& p);     // notices that the processor rebuilt its memory and puts the layer back
-    void loadLayerIntoProcessor (int layer);       // copy a stored layer in (an empty layer or Live = silence)
+    void loadLayerIntoProcessor (int layer) { loadLayerInto (*proc, layer); }
+    void loadLayerInto (clouds::GranularProcessor& pr, int layer);       // copy a stored layer in (an empty layer or Live = silence)
     void finishRecording();
     void discardRecording();
     void invalidateAllLayers();

@@ -64,6 +64,8 @@ SuperParasitesEngine::SuperParasitesEngine()
     : largeBuf (std::max (smallBytesFor (kNumBufferLengths - 1) + kWorkspace, largeBytesHd (kNumBufferLengths - 1)) / 8, 0),
       smallBuf (std::max (smallBytesFor (kNumBufferLengths - 1), smallBytesHd (kNumBufferLengths - 1)) / 8, 0)
 {
+    largeBufB.assign (largeBuf.size(), 0); smallBufB.assign (smallBuf.size(), 0);   // the Crossfade's second engine has its own memory
+    procB.reset (newZeroed<clouds::GranularProcessor>());   // the Crossfade's second engine; created here so that no switch allocates
     // Layer storage: address space for the largest possible recording memory of each channel is reserved up front (pages are
     // only used when a layer is recorded), so recording a layer never has to allocate while audio is running.
     const size_t most = std::max ({ stereoCapHd (kNumBufferLengths - 1), monoCapHd (kNumBufferLengths - 1),
@@ -217,6 +219,23 @@ void SuperParasitesEngine::runBlocks (const Params& p)
         capturePending = false;
         prm->gate = p.gate;
 
+        // Crossfade: the second engine gets the same input and knob values as the first, and plays the incoming layer frozen.
+        std::vector<XfFrame>& outB = xfOut;
+        if (xfState != 0)
+        {
+            Parameters* pb = procB->mutable_parameters();
+            *pb = *prm;
+            pb->freeze = (p.mode != BeatRepeat) ? true : p.freeze;
+            pb->capture = false;
+            procB->set_playback_mode ((PlaybackMode) std::clamp (p.mode, 0, (int) PLAYBACK_MODE_LAST - 1));
+            procB->set_quality (std::clamp (p.quality, 0, 3));
+            procB->set_hold_writes (true);
+            xfLoadIfReady();
+            outB.resize (B);
+            procB->Process (in.data(), reinterpret_cast<ShortFrame*> (outB.data()), B);
+            for (int k = 0; k < kPrepareCallsPerBlock; ++k) procB->Prepare();
+        }
+
         proc->Process (in.data(), out.data(), B);
         layersAfterProcess();
 
@@ -224,7 +243,17 @@ void SuperParasitesEngine::runBlocks (const Params& p)
             proc->Prepare();
         layersAfterPrepare (p);
 
-        if (gainPrev == 1.0f && gainNow == 1.0f)
+        if (xfState == 2)
+        {   // cross-fade: equal-power (the two layers are different audio, so their powers add)
+            for (size_t i = 0; i < B; ++i)
+            {
+                const float x = ((float) xfFadeDone + (float) (i + 1) / (float) B) / (float) xfFadeBlocks;
+                const float a = std::cos (1.57079632679f * x), b = std::sin (1.57079632679f * x);
+                procOutL.push_back (((float) out[i].l * a + (float) outB[i].l * b) / 32768.0f);
+                procOutR.push_back (((float) out[i].r * a + (float) outB[i].r * b) / 32768.0f);
+            }
+        }
+        else if (gainPrev == 1.0f && gainNow == 1.0f)
         {
             for (size_t i = 0; i < B; ++i)
             {
@@ -241,6 +270,8 @@ void SuperParasitesEngine::runBlocks (const Params& p)
                 procOutR.push_back ((float) out[i].r / 32768.0f * g);
             }
         }
+        if (xfState == 1) { if (--xfPrerollLeft <= 0 && xfLoaded) xfState = 2; }
+        else if (xfState == 2 && ++xfFadeDone >= xfFadeBlocks) xfFinish (p);
     }
     if (inQueueHead > 4096)
     {
@@ -336,9 +367,9 @@ void SuperParasitesEngine::invalidateAllLayers()
     publishLayers();
 }
 
-void SuperParasitesEngine::loadLayerIntoProcessor (int layer)
+void SuperParasitesEngine::loadLayerInto (clouds::GranularProcessor& pr, int layer)
 {
-    if (! proc->samples_valid()) return;
+    if (! pr.samples_valid()) return;
     const bool wantAudio = layer >= 1 && layer <= kNumLayers && layers[layer - 1].filled;
     if (wantAudio)
     {
@@ -347,20 +378,20 @@ void SuperParasitesEngine::loadLayerIntoProcessor (int layer)
         for (int ch = 0; ch < 2; ++ch)
         {
             void* d = nullptr; size_t bytes = 0;
-            if (proc->sample_region (ch, &d, &bytes)) { if (L.mem[ch].size() != bytes) fits = false; }
+            if (pr.sample_region (ch, &d, &bytes)) { if (L.mem[ch].size() != bytes) fits = false; }
         }
         if (fits)
         {
             for (int ch = 0; ch < 2; ++ch)
             {
                 void* d = nullptr; size_t bytes = 0;
-                if (proc->sample_region (ch, &d, &bytes)) std::memcpy (d, L.mem[ch].data(), bytes);
+                if (pr.sample_region (ch, &d, &bytes)) std::memcpy (d, L.mem[ch].data(), bytes);
             }
-            proc->ResyncWriteHeads (L.head[0], L.head[1]);
+            pr.ResyncWriteHeads (L.head[0], L.head[1]);
             return;
         }
     }
-    proc->ClearSamples();   // an empty layer, Live, or (never expected) a layer that doesn't fit: silence
+    pr.ClearSamples();   // an empty layer, Live, or (never expected) a layer that doesn't fit: silence
 }
 
 void SuperParasitesEngine::finishRecording()
@@ -407,6 +438,61 @@ void SuperParasitesEngine::discardRecording()
     publishLayers();
 }
 
+// ---- Crossfade: the incoming layer runs on a second processor (pre-roll), then the two outputs are cross-faded ------------
+void SuperParasitesEngine::xfAbort()
+{
+    xfState = 0; xfTarget = 0; xfPrerollLeft = 0; xfFadeDone = 0; xfLoaded = false;
+}
+
+void SuperParasitesEngine::xfStart (const Params& p, int target)
+{
+    const int bl = currentBufferLength, hd = currentEngineRate != 0;
+    const size_t small = hd ? smallBytesHd (bl) : smallBytesFor (bl);
+    const size_t large = hd ? largeBytesHd (bl) : small + kWorkspace;
+    std::fill (largeBufB.begin(), largeBufB.begin() + (long) (large / 8), 0);
+    std::fill (smallBufB.begin(), smallBufB.begin() + (long) (small / 8), 0);
+    procB->~GranularProcessor();                        // re-create in place: fresh zeroed state, no allocation
+    std::memset ((void*) procB.get(), 0, sizeof (clouds::GranularProcessor));
+    new ((void*) procB.get()) clouds::GranularProcessor();
+    procB->Init (largeBufB.data(), large, smallBufB.data(), small, clouds::EngineRate (hd),
+                 hd ? stereoCapHd (bl) : 0, hd ? monoCapHd (bl) : 0);
+    *procB->mutable_parameters() = clouds::Parameters();
+    procB->Prepare();
+    xfGeneration = procB->buffers_generation();
+    xfLoaded = false;
+    xfTarget = target;
+    xfState = 1;
+    xfPrerollLeft = std::max (1, (int) std::lround (kCrossfadePrerollMs * 1000.0 / 1000.0));   // blocks are 1 ms
+    xfFadeBlocks = std::max (2, (int) std::lround (std::clamp (p.switchTimeMs, 0.0f, kMaxSwitchMs)));
+    xfFadeDone = 0;
+}
+
+void SuperParasitesEngine::xfLoadIfReady()
+{
+    const int32_t gen = procB->buffers_generation();
+    if (gen != xfGeneration) { xfGeneration = gen; xfLoaded = false; }   // B rebuilt its memory (mode / quality settled)
+    if (! xfLoaded && procB->samples_valid())
+    {
+        loadLayerInto (*procB, xfTarget);
+        xfLoaded = true;
+    }
+}
+
+void SuperParasitesEngine::xfFinish (const Params& p)
+{
+    std::swap (proc, procB);                  // B (the incoming layer) becomes the engine; the old one is idle until the next Crossfade
+    largeBuf.swap (largeBufB);
+    smallBuf.swap (smallBufB);
+    lastGeneration = proc->buffers_generation();
+    loadedLayerIdx = xfTarget;
+    const int mode = std::clamp (p.mode, 0, (int) NumModes - 1);
+    freezeWasForced = (mode != BeatRepeat);   // B was frozen by force (not in Beat repeat): continue that way
+    forcedFreeze = freezeWasForced;
+    lastFreeze = p.freeze;
+    xfAbort();
+    publishLayers();
+}
+
 void SuperParasitesEngine::layersBeforeBlock (const Params& p)
 {
     const int wanted = std::clamp (p.layer, 0, kNumLayers);
@@ -414,6 +500,9 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
     const int target = (wanted > 0 && modeUsesLayers (mode)) ? wanted : 0;   // the layer that should be playing now
     const bool valid = proc->samples_valid();
     serviceTransfers();     // Save / Load hand-overs with the UI thread
+
+    // A Crossfade is abandoned (the old layer simply carries on) if its target is emptied or the mode stops using layers.
+    if (xfState != 0 && (! modeUsesLayers (mode) || xfTarget < 1 || ! layers[xfTarget - 1].filled)) xfAbort();
 
     // Clear request: empties the selected layer.
     if (clearRequested.exchange (false) && wanted > 0)
@@ -433,7 +522,7 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
         {
             finishRecording();                      // stopped by the user: keep what was recorded
         }
-        else if (target > 0 && loadedLayerIdx == target && ! switching && ! reloadNeeded && valid)
+        else if (target > 0 && loadedLayerIdx == target && ! switching && xfState == 0 && ! reloadNeeded && valid)
         {
             proc->BeginLayerRecording();            // clears the memory, records one pass from the start
             recording = true; recLayer = target;
@@ -474,9 +563,20 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
             publishLayers();
         }
     }
+    else if (xfState != 0)
+    {
+        // a Crossfade is under way (advanced after the blocks are processed, see runBlocks)
+    }
     else if ((target != loadedLayerIdx || reloadNeeded) && valid)
     {
         if (recording) finishRecording();           // changing layer while recording keeps what was recorded
+        if (p.switchStyle == 1 && switchMs > 0 && target > 0 && layers[target - 1].filled && ! reloadNeeded && fadePos >= 1.0f
+            && ! fadingIn)
+        {
+            xfStart (p, target);                    // the incoming layer starts playing on the second engine; the fade comes after the pre-roll
+        }
+        else
+        {
         switching = true;
         softFade = switchMs > 0 || fadePos < 1.0f;  // (a switch asked for while a soft fade is still finishing continues smoothly)
         if (softFade)
@@ -489,6 +589,7 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
         {
             fadeLeft = kSwitchFadeBlocks;
             proc->set_mute_out (true);
+        }
         }
     }
     else if (fadingIn)
@@ -648,6 +749,7 @@ void SuperParasitesEngine::serviceTransfers()
             L.seconds = (float) ((double) importFrames / fmtRate.load());
             L.filled = true;
             bump (ly, false);
+            if (xfState != 0 && xfTarget == ly) xfAbort();   // a Crossfade towards this layer would play the old audio
             if (loadedLayerIdx == ly) reloadNeeded = true;    // it is playing now: swap the new audio in with the usual fade
             publishLayers();
             importOutcome.store (ImportOk);
