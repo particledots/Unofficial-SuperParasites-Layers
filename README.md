@@ -152,6 +152,8 @@ how any of it sounds beyond that.
 * The plug-in and editor sources compile against the JUCE 8.0.6 headers (syntax check, Linux, no warnings; checked that it does report a deliberate error).
 * Cost of a layer switch on this Linux machine: slowest 512-sample `process()` call while switching 0.5 ms with 10 s layers and 1.0 ms with 20 s layers (48 kHz stereo).
 
+**Fourth build (Switch Style / Crossfade): every step passed on the macOS runner, run 38519039695, commit `f5b9929`** (all tests, Live = HD, arm64 + x86_64 AU and VST3, packaging).
+
 **Verified on GitHub Actions (macOS runner): every step passed for the second build (run 38492051213, commit `d0bd3b1`) and for the third build with file links and the Record parameter (run 38502391893, commit `e2dab61`), including `library_test` with the macOS compiler.** The steps are `engine_test`, `rate_compare_test`, `layers_test`, the Live = HD comparison, the universal
 arm64 + x86_64 AU and VST3 build, ad-hoc signing, packaging and the `SuperParasites-Layers-macOS` artifact. (I can see each step's pass / fail result, not its log text.)
 
