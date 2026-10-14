@@ -69,6 +69,8 @@ SuperParasitesEngine::SuperParasitesEngine()
     const size_t most = std::max ({ stereoCapHd (kNumBufferLengths - 1), monoCapHd (kNumBufferLengths - 1),
                                     smallBytesFor (kNumBufferLengths - 1) + kWorkspace }) + 64;
     for (auto& l : layers) for (auto& m : l.mem) m.reserve (most);
+    for (auto& m : exportMem) m.reserve (most);     // hand-over copies for Save / Load, also allocated up front
+    for (auto& m : importMem) m.reserve (most);
     for (int i = 0; i < kNumLayers; ++i) { uiState[i].store (LayerEmpty); uiSeconds[i].store (0.0f); }
 }
 
@@ -89,8 +91,9 @@ void SuperParasitesEngine::rebuildProcessor (int bufferLength, int engineRate)
     currentEngineRate = engineRate;
     lastFreeze = false;
     // Layers: a new processor starts with silent memory, so no layer is loaded and nothing is recording. (The stored layers stay.)
-    loadedLayerIdx = 0; recording = false; recLayer = 0; switching = false; freezeWasForced = false; forcedFreeze = false;
+    loadedLayerIdx = 0; recording = false; recLayer = 0; resetFade(); freezeWasForced = false; forcedFreeze = false;
     lastGeneration = proc->buffers_generation();
+    publishFormat();
     publishLayers();
 }
 
@@ -221,10 +224,22 @@ void SuperParasitesEngine::runBlocks (const Params& p)
             proc->Prepare();
         layersAfterPrepare (p);
 
-        for (size_t i = 0; i < B; ++i)
+        if (gainPrev == 1.0f && gainNow == 1.0f)
         {
-            procOutL.push_back ((float) out[i].l / 32768.0f);
-            procOutR.push_back ((float) out[i].r / 32768.0f);
+            for (size_t i = 0; i < B; ++i)
+            {
+                procOutL.push_back ((float) out[i].l / 32768.0f);
+                procOutR.push_back ((float) out[i].r / 32768.0f);
+            }
+        }
+        else
+        {   // a soft layer switch is in progress: ramp the output gain across this block (Switch Time above 0)
+            for (size_t i = 0; i < B; ++i)
+            {
+                const float g = gainPrev + (gainNow - gainPrev) * (float) (i + 1) / (float) B;
+                procOutL.push_back ((float) out[i].l / 32768.0f * g);
+                procOutR.push_back ((float) out[i].r / 32768.0f * g);
+            }
         }
     }
     if (inQueueHead > 4096)
@@ -312,8 +327,9 @@ void SuperParasitesEngine::publishLayers()
 
 void SuperParasitesEngine::invalidateAllLayers()
 {
-    for (auto& l : layers) { l.filled = false; l.seconds = 0.0f; l.head[0] = l.head[1] = 0; l.mem[0].clear(); l.mem[1].clear(); }
-    recording = false; recLayer = 0; switching = false;
+    for (auto& l : layers) { l.filled = false; l.seconds = 0.0f; l.frames = 0; l.head[0] = l.head[1] = 0; l.mem[0].clear(); l.mem[1].clear(); }
+    recording = false; recLayer = 0; resetFade();
+    fmtValid.store (false);
     loadedLayerIdx = 0;               // the processor is about to be rebuilt in the new format; the state machine reloads then
     if (proc) { proc->EndLayerRecording(); proc->set_mute_out (false); }
     publishLayers();
@@ -368,6 +384,7 @@ void SuperParasitesEngine::finishRecording()
             if (ch == 0) ok = false;
         }
     }
+    L.frames = ok ? frames : 0;
     L.filled = ok;
     L.seconds = ok ? (float) ((double) frames / (double) proc->stored_sample_rate()) : 0.0f;
     recording = false;
@@ -380,7 +397,7 @@ void SuperParasitesEngine::discardRecording()
     if (recLayer >= 1)
     {
         Layer& L = layers[recLayer - 1];
-        L.filled = false; L.seconds = 0.0f; L.mem[0].clear(); L.mem[1].clear();
+        L.filled = false; L.seconds = 0.0f; L.frames = 0; L.mem[0].clear(); L.mem[1].clear();
     }
     proc->EndLayerRecording();
     recording = false;
@@ -393,13 +410,14 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
     const int mode = std::clamp (p.mode, 0, (int) NumModes - 1);
     const int target = (wanted > 0 && modeUsesLayers (mode)) ? wanted : 0;   // the layer that should be playing now
     const bool valid = proc->samples_valid();
+    serviceTransfers();     // Save / Load hand-overs with the UI thread
 
     // Clear request: empties the selected layer.
     if (clearRequested.exchange (false) && wanted > 0)
     {
         Layer& L = layers[wanted - 1];
         if (recording && recLayer == wanted) discardRecording();
-        L.filled = false; L.seconds = 0.0f; L.mem[0].clear(); L.mem[1].clear();
+        L.filled = false; L.seconds = 0.0f; L.frames = 0; L.mem[0].clear(); L.mem[1].clear();
         if (loadedLayerIdx == wanted && valid) proc->ClearSamples();
         publishLayers();
     }
@@ -411,35 +429,70 @@ void SuperParasitesEngine::layersBeforeBlock (const Params& p)
         {
             finishRecording();                      // stopped by the user: keep what was recorded
         }
-        else if (target > 0 && loadedLayerIdx == target && ! switching && valid)
+        else if (target > 0 && loadedLayerIdx == target && ! switching && ! reloadNeeded && valid)
         {
             proc->BeginLayerRecording();            // clears the memory, records one pass from the start
             recording = true; recLayer = target;
-            layers[target - 1].filled = false; layers[target - 1].seconds = 0.0f;
+            layers[target - 1].filled = false; layers[target - 1].seconds = 0.0f; layers[target - 1].frames = 0;
             layers[target - 1].mem[0].clear(); layers[target - 1].mem[1].clear();
             publishLayers();
         }
     }
 
-    // Switching layer (or going to / from Live): fade out, swap the memory, fade in. Only once the memory holds audio.
+    // Switching layer (or going to / from Live), only once the memory holds audio.
+    //  Switch Time = 0: mute (about 24 ms), swap, unmute (the processor's own mute fade).
+    //  Switch Time > 0: the output fades out over half the time, the layer is swapped, and it fades back in over the other half.
+    const int switchMs = (int) std::lround (std::clamp (p.switchTimeMs, 0.0f, kMaxSwitchMs));
     if (switching)
     {
-        if (--fadeLeft <= 0)
+        if (softFade)
+        {
+            fadePos -= fadeStep;
+            if (fadePos <= 0.0f)
+            {
+                fadePos = 0.0f;
+                loadLayerIntoProcessor (target);
+                loadedLayerIdx = target;
+                reloadNeeded = false;
+                switching = false;
+                fadingIn = true;
+                publishLayers();
+            }
+        }
+        else if (--fadeLeft <= 0)
         {
             loadLayerIntoProcessor (target);
             loadedLayerIdx = target;
+            reloadNeeded = false;
             switching = false;
             proc->set_mute_out (false);
             publishLayers();
         }
     }
-    else if (target != loadedLayerIdx && valid)
+    else if ((target != loadedLayerIdx || reloadNeeded) && valid)
     {
         if (recording) finishRecording();           // changing layer while recording keeps what was recorded
         switching = true;
-        fadeLeft = kSwitchFadeBlocks;
-        proc->set_mute_out (true);
+        softFade = switchMs > 0 || fadePos < 1.0f;  // (a switch asked for while a soft fade is still finishing continues smoothly)
+        if (softFade)
+        {
+            const int half = std::max (1, (switchMs > 0 ? switchMs : 24) / 2);
+            fadeStep = 1.0f / (float) half;
+            fadingIn = false;
+        }
+        else
+        {
+            fadeLeft = kSwitchFadeBlocks;
+            proc->set_mute_out (true);
+        }
     }
+    else if (fadingIn)
+    {
+        fadePos += fadeStep;
+        if (fadePos >= 1.0f) { fadePos = 1.0f; fadingIn = false; softFade = false; }
+    }
+    gainPrev = gainNow;
+    gainNow = fadePos >= 1.0f ? 1.0f : 0.5f - 0.5f * std::cos (3.14159265358979f * fadePos);   // raised-cosine fade
 
     // While a layer plays (and isn't being recorded) nothing may be written into it, and it plays as frozen audio
     // (Beat repeat keeps its own behaviour: freeze would make every slice fire).
@@ -462,7 +515,7 @@ void SuperParasitesEngine::layersAfterPrepare (const Params& p)
     // The processor rebuilt its sample memory (a mode change into or out of Spectral / Spectral clouds / Resonestor / Oliverb,
     // or a quality change): it is fresh silence now, and a recording in progress is cut off.
     if (recording) discardRecording();
-    switching = false;
+    resetFade();
     proc->set_mute_out (false);
     loadedLayerIdx = 0;
     const int wanted = std::clamp (p.layer, 0, kNumLayers);
@@ -472,5 +525,217 @@ void SuperParasitesEngine::layersAfterPrepare (const Params& p)
         loadLayerIntoProcessor (wanted);      // freshly rebuilt processor: no sound is playing, so no fade is needed
         loadedLayerIdx = wanted;
     }
+    publishFormat();
     publishLayers();
+}
+
+
+// ======================================================================================================================
+// Saving and loading a layer's audio (WAV)
+// ======================================================================================================================
+namespace
+{
+    // Offline version of the plug-in's streaming resampler, with its own delay (17 input samples) taken out.
+    std::vector<float> resampleOffline (const std::vector<float>& in, double inRate, double outRate)
+    {
+        if (std::abs (inRate - outRate) < 1e-6 || in.empty()) return in;
+        SincResampler rs;
+        rs.init (inRate, outRate);
+        std::vector<float> padded (in);
+        padded.insert (padded.end(), 64, 0.0f);
+        std::vector<float> raw;
+        raw.reserve ((size_t) ((double) padded.size() * outRate / inRate) + 8);
+        rs.process (padded.data(), padded.size(), raw);
+        const size_t drop = (size_t) std::lround (17.0 * outRate / inRate);
+        const size_t want = (size_t) std::lround ((double) in.size() * outRate / inRate);
+        std::vector<float> out;
+        if (raw.size() > drop) out.assign (raw.begin() + (long) drop, raw.begin() + (long) std::min (raw.size(), drop + want));
+        return out;
+    }
+
+    inline int16_t toS16 (float x)
+    {
+        const long v = std::lrintf (std::clamp (x, -1.0f, 1.0f) * 32768.0f);
+        return (int16_t) std::clamp (v, -32768L, 32767L);
+    }
+
+    // The sample memory of one channel: `bytes` long, `cap` audio samples, then the 8-sample interpolation tail that repeats the start.
+    void quantizeChannel (const float* x, size_t n, size_t cap, bool lowFi, size_t bytes, std::vector<uint8_t>& mem)
+    {
+        mem.assign (bytes, lowFi ? 127 : 0);
+        const size_t tail = (size_t) ::kInterpolationTail;
+        if (lowFi)
+        {
+            for (size_t i = 0; i < n; ++i) mem[i] = clouds::Lin2MuLaw (toS16 (x[i]));
+            for (size_t k = 0; k < tail && cap + k < bytes; ++k) mem[cap + k] = mem[k];
+        }
+        else
+        {
+            int16_t* s = reinterpret_cast<int16_t*> (mem.data());
+            for (size_t i = 0; i < n; ++i) s[i] = toS16 (x[i]);
+            for (size_t k = 0; k < tail && (cap + k) * 2 + 1 < bytes; ++k) s[cap + k] = s[k];
+        }
+    }
+}
+
+void SuperParasitesEngine::publishFormat()
+{
+    if (! proc || ! proc->samples_valid()) return;
+    void* d = nullptr; size_t b0 = 0, b1 = 0;
+    if (! proc->sample_region (0, &d, &b0)) return;
+    const bool two = proc->sample_region (1, &d, &b1);
+    const bool lowFi = proc->stored_sample_rate() < 20000.0f;
+    const int samples = lowFi ? (int) b0 : (int) (b0 / 2);
+    fmtLowFi.store (lowFi);
+    fmtChannels.store (two ? 2 : 1);
+    fmtRate.store ((double) proc->stored_sample_rate());
+    fmtCap.store (std::max (0, samples - (int) ::kInterpolationTail));
+    fmtBytes0.store ((int64_t) b0);
+    fmtBytes1.store (two ? (int64_t) b1 : 0);
+    fmtValid.store (true);
+}
+
+SuperParasitesEngine::LayerFormat SuperParasitesEngine::layerFormat() const
+{
+    LayerFormat f;
+    f.valid = fmtValid.load();
+    f.channels = fmtChannels.load();
+    f.lowFi = fmtLowFi.load();
+    f.sampleRate = fmtRate.load();
+    f.capFrames = fmtCap.load();
+    return f;
+}
+
+void SuperParasitesEngine::serviceTransfers()
+{
+    if (exportState.load() == 1)
+    {
+        const int ly = exportLayerReq.load();
+        if (ly >= 1 && ly <= kNumLayers && layers[ly - 1].filled && layers[ly - 1].frames > 0 && fmtValid.load())
+        {
+            const Layer& L = layers[ly - 1];
+            exportMem[0].assign (L.mem[0].begin(), L.mem[0].end());
+            exportMem[1].assign (L.mem[1].begin(), L.mem[1].end());
+            exportFrames = L.frames;
+            exportRate = fmtRate.load();
+            exportLowFi = fmtLowFi.load();
+            exportState.store (2);
+        }
+        else
+            exportState.store (3);
+    }
+
+    if (importState.load() == 2)
+    {
+        const int ly = importLayerReq;
+        const bool ok = ly >= 1 && ly <= kNumLayers && ! recording && fmtValid.load()
+                        && importBytes0 == fmtBytes0.load() && importBytes1 == fmtBytes1.load() && importLowFi == fmtLowFi.load()
+                        && (int64_t) importMem[0].size() == importBytes0 && (int64_t) importMem[1].size() == importBytes1;
+        if (ok)
+        {
+            Layer& L = layers[ly - 1];
+            L.mem[0].assign (importMem[0].begin(), importMem[0].end());
+            L.mem[1].assign (importMem[1].begin(), importMem[1].end());
+            L.frames = importFrames;
+            const int cap = fmtCap.load();
+            L.head[0] = L.head[1] = (importFrames >= cap ? 0 : importFrames);   // as if it had been recorded: the head wraps after a full pass
+            L.seconds = (float) ((double) importFrames / fmtRate.load());
+            L.filled = true;
+            if (loadedLayerIdx == ly) reloadNeeded = true;    // it is playing now: swap the new audio in with the usual fade
+            publishLayers();
+            importOutcome.store (ImportOk);
+        }
+        else
+            importOutcome.store (ImportRejected);
+        importState.store (0);
+    }
+}
+
+bool SuperParasitesEngine::requestExport (int layer)
+{
+    if (layer < 1 || layer > kNumLayers) return false;
+    int s = exportState.load();
+    if (s == 2 || s == 3) exportState.store (0);     // an old, never-collected result
+    int expected = 0;
+    if (! exportState.compare_exchange_strong (expected, 4)) return false;
+    exportLayerReq.store (layer);
+    exportState.store (1);
+    return true;
+}
+
+SuperParasitesEngine::IoResult SuperParasitesEngine::pollExport (LayerAudio& out)
+{
+    const int s = exportState.load();
+    if (s == 3) { exportState.store (0); return ExportEmpty; }
+    if (s != 2) return IoNone;
+    const int nch = exportMem[1].empty() ? 1 : 2;
+    const size_t n = (size_t) exportFrames;
+    out = LayerAudio();
+    out.channels = nch;
+    out.sampleRate = exportRate;
+    for (int c = 0; c < nch; ++c)
+    {
+        out.ch[c].assign (n, 0.0f);
+        const auto& m = exportMem[c];
+        if (exportLowFi)
+        {
+            for (size_t i = 0; i < n && i < m.size(); ++i) out.ch[c][i] = (float) clouds::MuLaw2Lin (m[i]) / 32768.0f;
+        }
+        else
+        {
+            for (size_t i = 0; i < n && i * 2 + 1 < m.size(); ++i)
+            {
+                int16_t v; std::memcpy (&v, &m[i * 2], 2);
+                out.ch[c][i] = (float) v / 32768.0f;
+            }
+        }
+    }
+    exportState.store (0);
+    return ExportReady;
+}
+
+bool SuperParasitesEngine::submitImport (int layer, const LayerAudio& audio, std::string& whyNot)
+{
+    if (layer < 1 || layer > kNumLayers) { whyNot = "Pick a layer (1-6) first."; return false; }
+    if (audio.frames() == 0 || audio.channels < 1 || audio.sampleRate < 1000.0) { whyNot = "That audio is empty."; return false; }
+    const LayerFormat f = layerFormat();
+    if (! f.valid || f.capFrames <= 0)
+    { whyNot = "The layer memory isn't ready - choose Granular, Pitch shifter, Looping delay or Beat repeat, let it run a moment, then try again."; return false; }
+    int expected = 0;
+    if (! importState.compare_exchange_strong (expected, 1)) { whyNot = "Still busy with the last load - try again in a moment."; return false; }
+
+    const size_t cap = (size_t) f.capFrames;
+    const size_t need = std::min (audio.frames(), (size_t) std::ceil ((double) cap * audio.sampleRate / f.sampleRate) + 128);
+    auto take = [&] (int c) { return std::vector<float> (audio.ch[c].begin(), audio.ch[c].begin() + (long) need); };
+    std::vector<float> a = resampleOffline (take (0), audio.sampleRate, f.sampleRate);
+    std::vector<float> b;
+    if (audio.channels >= 2) b = resampleOffline (take (1), audio.sampleRate, f.sampleRate);
+    size_t n = std::min (a.size(), cap);
+    if (! b.empty()) n = std::min (n, b.size());
+
+    std::vector<float> L (a.begin(), a.begin() + (long) n), R;
+    if (f.channels == 1)
+    {
+        if (! b.empty()) for (size_t i = 0; i < n; ++i) L[i] = 0.5f * (a[i] + b[i]);      // stereo file into a mono layer: the two channels are mixed
+    }
+    else
+        R = b.empty() ? L : std::vector<float> (b.begin(), b.begin() + (long) n);          // mono file into a stereo layer: both sides
+
+    const int64_t bytes0 = fmtBytes0.load(), bytes1 = fmtBytes1.load();
+    quantizeChannel (L.data(), n, cap, f.lowFi, (size_t) bytes0, importMem[0]);
+    if (f.channels == 2) quantizeChannel (R.data(), n, cap, f.lowFi, (size_t) bytes1, importMem[1]);
+    else importMem[1].clear();
+    importBytes0 = bytes0; importBytes1 = f.channels == 2 ? bytes1 : 0;
+    importLowFi = f.lowFi;
+    importFrames = (int32_t) n;
+    importLayerReq = layer;
+    importOutcome.store (IoNone);
+    importState.store (2);
+    return true;
+}
+
+SuperParasitesEngine::IoResult SuperParasitesEngine::pollImport()
+{
+    if (importState.load() != 0) return IoNone;
+    return (IoResult) importOutcome.exchange (IoNone);
 }

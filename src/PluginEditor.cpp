@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "LayerAudio.h"
 
 namespace
 {
@@ -110,7 +111,9 @@ SuperParasitesEditor::SuperParasitesEditor (SuperParasitesAudioProcessor& p) : A
     addMenu (layerMenu, "layer", "LAYER", { "Live", "Layer 1", "Layer 2", "Layer 3", "Layer 4", "Layer 5", "Layer 6" });
     recordLayer.onClick = [this] { proc.requestRecordLayer(); };
     clearLayer.onClick  = [this] { proc.requestClearLayer(); };
-    for (auto* b : { &recordLayer, &clearLayer })
+    saveLayer.onClick   = [this] { startSave(); };
+    loadLayer.onClick   = [this] { startLoad(); };
+    for (auto* b : { &recordLayer, &clearLayer, &saveLayer, &loadLayer })
     {
         b->setColour (juce::TextButton::buttonColourId, kPanel);
         b->setColour (juce::TextButton::buttonOnColourId, kAccent);
@@ -125,10 +128,25 @@ SuperParasitesEditor::SuperParasitesEditor (SuperParasitesAudioProcessor& p) : A
     layerNote.setFont (juce::Font (juce::FontOptions (11.0f)));
     layerNote.setColour (juce::Label::textColourId, kDim);
     layerNote.setText ("Pick a layer, press RECORD (it clears the layer and records from its start until it is full; press again to stop early). "
+                       "SAVE WAV writes the selected layer to a WAV file; LOAD WAV puts a WAV file into it (stereo or mono, any sample rate; a file longer than the layer is cut). "
+                       "SWITCH TIME: Instant = a very short swap; higher = fade out, swap, fade in. "
                        "Layers play in Granular, Pitch shifter / time stretch, Looping delay and Beat repeat, held like FREEZE. "
                        "LIVE is the always-recording buffer. Changing Quality, Buffer Length or Engine Rate empties the layers. "
-                       "Layers are not saved with the project.", juce::dontSendNotification);
+                       "Layers are not saved with the Logic project - use SAVE WAV for that.", juce::dontSendNotification);
     addAndMakeVisible (layerNote);
+
+    addKnob (switchTime, "switch_time", "SWITCH TIME");
+    switchTime.slider.setSliderStyle (juce::Slider::LinearHorizontal);
+    switchTime.slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 80, 20);
+    switchTime.slider.setColour (juce::Slider::trackColourId, kAccent);
+    switchTime.slider.setColour (juce::Slider::thumbColourId, kText);
+    switchTime.slider.setColour (juce::Slider::backgroundColourId, kTrack);
+    switchTime.label.setJustificationType (juce::Justification::centredLeft);
+    switchTime.slider.setTooltip ("0 = instant (a very short swap). Above 0 the sound fades out, the layer is swapped, and it fades back in over this total time.");
+    ioLabel.setJustificationType (juce::Justification::centredLeft);
+    ioLabel.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
+    ioLabel.setColour (juce::Label::textColourId, kAccent);
+    addAndMakeVisible (ioLabel);
     startTimerHz (10);
 
     hint.setJustificationType (juce::Justification::topLeft);
@@ -140,7 +158,7 @@ SuperParasitesEditor::SuperParasitesEditor (SuperParasitesAudioProcessor& p) : A
         *proc.apvts.getParameter ("mode"), [this] (float v) { updateHint ((int) v); });
     modeWatch->sendInitialUpdate();
 
-    setSize (660, 680);
+    setSize (660, 770);
 }
 
 SuperParasitesEditor::~SuperParasitesEditor() { stopTimer(); setLookAndFeel (nullptr); }
@@ -175,10 +193,106 @@ void SuperParasitesEditor::timerCallback()
     }
     const juce::String text = head + "\n" + all;
     if (text != shownStatus) { shownStatus = text; layerStatusLabel.setText (text, juce::dontSendNotification); }
+    // Save / Load progress
+    if (savePending)
+    {
+        LayerAudio a;
+        const auto r = proc.pollExport (a);
+        if (r == SuperParasitesEngine::ExportReady)
+        {
+            savePending = false;
+            const auto bytes = writeWav16 (a);
+            if (pendingSaveFile.replaceWithData (bytes.data(), bytes.size()))
+                showMessage ("Saved " + pendingSaveFile.getFileName() + " (" + juce::String ((double) a.frames() / a.sampleRate, 1) + " s, "
+                             + juce::String ((int) std::lround (a.sampleRate)) + " Hz, " + (a.channels == 2 ? "stereo" : "mono") + ").");
+            else
+                showMessage ("Couldn't write that file - check the folder is writable.");
+        }
+        else if (r == SuperParasitesEngine::ExportEmpty)
+        {
+            savePending = false;
+            showMessage ("That layer is empty - nothing to save.");
+        }
+        else if (++saveWaitTicks == 30)
+            showMessage ("Waiting for the audio to run... (the plug-in only hands over a layer while Logic is processing audio - press Play if it is stopped)");
+    }
+    if (loadPending)
+    {
+        const auto r = proc.pollImport();
+        if (r == SuperParasitesEngine::ImportOk) { loadPending = false; showMessage ("Loaded into the layer."); }
+        else if (r == SuperParasitesEngine::ImportRejected)
+        {
+            loadPending = false;
+            showMessage ("Not loaded: the layer format changed or a recording was running. Try again.");
+        }
+    }
+    if (ioMessageTicks > 0 && --ioMessageTicks == 0) ioLabel.setText ({}, juce::dontSendNotification);
+    const bool formatOk = proc.layerFormat().valid;
+    saveLayer.setEnabled (layer > 0 && ! savePending && proc.layerStatus (juce::jmax (1, layer)).state == SuperParasitesEngine::LayerFilled);
+    loadLayer.setEnabled (layer > 0 && ! loadPending && ! recordingNow && formatOk);
     recordLayer.setButtonText (recordingNow ? "STOP" : "RECORD");
     recordLayer.setColour (juce::TextButton::buttonColourId, recordingNow ? juce::Colour (0xffb5413a) : kPanel);
     recordLayer.setEnabled (layer > 0 && SuperParasitesEngine::modeUsesLayers (mode));
     clearLayer.setEnabled (layer > 0);
+}
+
+void SuperParasitesEditor::showMessage (const juce::String& text)
+{
+    ioLabel.setText (text, juce::dontSendNotification);
+    ioMessageTicks = 90;     // about 9 seconds
+}
+
+namespace
+{
+    juce::File& lastFolder()
+    {
+        static juce::File f = juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+        return f;
+    }
+}
+
+void SuperParasitesEditor::startSave()
+{
+    const int layer = (int) *proc.apvts.getRawParameterValue ("layer");
+    if (layer < 1 || savePending) return;
+    chooser = std::make_unique<juce::FileChooser> ("Save layer " + juce::String (layer) + " as a WAV file",
+                                                   lastFolder().getChildFile ("SuperParasites Layer " + juce::String (layer) + ".wav"), "*.wav");
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                              | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [this, layer] (const juce::FileChooser& fc)
+    {
+        auto f = fc.getResult();
+        if (f == juce::File()) return;                         // cancelled
+        if (! f.hasFileExtension ("wav")) f = f.withFileExtension ("wav");
+        lastFolder() = f.getParentDirectory();
+        if (! proc.requestExportLayer (layer)) { showMessage ("Still busy with the last save - try again in a moment."); return; }
+        pendingSaveFile = f;
+        savePending = true;
+        saveWaitTicks = 0;
+        showMessage ("Saving...");
+    });
+}
+
+void SuperParasitesEditor::startLoad()
+{
+    const int layer = (int) *proc.apvts.getRawParameterValue ("layer");
+    if (layer < 1 || loadPending) return;
+    chooser = std::make_unique<juce::FileChooser> ("Load a WAV file into layer " + juce::String (layer), lastFolder(), "*.wav");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [this, layer] (const juce::FileChooser& fc)
+    {
+        const auto f = fc.getResult();
+        if (f == juce::File()) return;                         // cancelled
+        lastFolder() = f.getParentDirectory();
+        if (f.getSize() > 300LL * 1024 * 1024) { showMessage ("That file is too big (over 300 MB)."); return; }
+        juce::MemoryBlock data;
+        if (! f.loadFileAsData (data)) { showMessage ("Couldn't read that file."); return; }
+        LayerAudio audio; std::string err;
+        if (! readWav (static_cast<const uint8_t*> (data.getData()), data.getSize(), audio, err)) { showMessage (juce::String (err)); return; }
+        if (! proc.submitImportLayer (layer, audio, err)) { showMessage (juce::String (err)); return; }
+        loadPending = true;
+        showMessage ("Loading " + f.getFileName() + "...");
+    });
 }
 
 void SuperParasitesEditor::updateHint (int mode)
@@ -241,7 +355,7 @@ void SuperParasitesEditor::paint (juce::Graphics& g)
     g.fillRoundedRectangle (12.0f, 58.0f, (float) getWidth() - 24.0f, 150.0f, 10.0f);    // main knobs
     g.fillRoundedRectangle (12.0f, 216.0f, (float) getWidth() - 24.0f, 150.0f, 10.0f);   // blend knobs
     g.fillRoundedRectangle (12.0f, 374.0f, (float) getWidth() - 24.0f, 176.0f, 10.0f);   // switches, menus, mode hint
-    g.fillRoundedRectangle (12.0f, 558.0f, (float) getWidth() - 24.0f, 112.0f, 10.0f);   // layers
+    g.fillRoundedRectangle (12.0f, 558.0f, (float) getWidth() - 24.0f, 200.0f, 10.0f);   // layers
     g.setColour (kDim);
     g.setFont (juce::Font (juce::FontOptions (10.0f)));
     g.drawText ("the module's BLEND knob, one control per role", 24, 218, 320, 14, juce::Justification::centredLeft);
@@ -292,8 +406,13 @@ void SuperParasitesEditor::resized()
     // Layers panel
     layerMenu.label.setBounds (24, 564, 150, 16);
     layerMenu.box.setBounds (24, 582, 150, 26);
-    recordLayer.setBounds (186, 582, 90, 26);
-    clearLayer.setBounds (282, 582, 70, 26);
-    layerStatusLabel.setBounds (366, 564, W - 366 - 24, 44);
-    layerNote.setBounds (24, 614, W - 48, 52);
+    recordLayer.setBounds (186, 582, 84, 26);
+    clearLayer.setBounds (276, 582, 64, 26);
+    saveLayer.setBounds (352, 582, 84, 26);
+    loadLayer.setBounds (442, 582, 84, 26);
+    switchTime.label.setBounds (24, 616, 96, 22);
+    switchTime.slider.setBounds (124, 616, W - 124 - 24, 22);
+    layerStatusLabel.setBounds (24, 644, W - 48, 34);
+    ioLabel.setBounds (24, 680, W - 48, 18);
+    layerNote.setBounds (24, 700, W - 48, 54);
 }

@@ -6,6 +6,7 @@
 // What it does NOT check: how anything sounds, clicks you can hear, or any behaviour inside Logic.
 #include "SuperParasitesEngine.h"
 #include "stmlib/utils/random.h"
+#include "supercell/dsp/mu_law.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -486,6 +487,411 @@ static void testSwitchCost ()
     }
 }
 
+
+// ======================================================================================================================
+// Switch Time and WAV Save / Load
+// ======================================================================================================================
+#include "LayerAudio.h"
+#include <string>
+
+// RMS of consecutive windows of `ms` milliseconds.
+static std::vector<double> envelope (const std::vector<float>& x, double sr, double ms)
+{
+    const size_t w = (size_t) (sr * ms / 1000.0);
+    std::vector<double> e;
+    for (size_t i = 0; i + w <= x.size(); i += w)
+    {
+        double s = 0; for (size_t k = 0; k < w; ++k) s += (double) x[i + k] * x[i + k];
+        e.push_back (std::sqrt (s / (double) w));
+    }
+    return e;
+}
+
+// How long (ms) the envelope stays below `frac` of `ref`, counted from the first window that drops below it.
+static double quietMs (const std::vector<double>& e, double ms, double ref, double frac)
+{
+    int n = 0; for (double v : e) if (v < frac * ref) ++n;
+    return n * ms;
+}
+
+// ---- M: Switch Time ---------------------------------------------------------------------------------------------------------
+static void testSwitchTime (int engineRate)
+{
+    std::printf ("[M] Switch Time: fade out, swap, fade in (engine %s)\n", engineRate ? "48k" : "32k");
+    const double sr = 48000.0;
+    Rig r (sr, engineRate, 0, 0, Engine::LoopingDelay);
+    r.select (1); r.recordFull (kTone[1]);
+    r.select (2); r.recordFull (kTone[2]);
+    r.select (3); r.recordFull (kTone[3]);
+    r.select (1);
+    double steady = 0; check (r.listen (&steady) == 1, "layer 1 plays before the switch");
+    const double ref = r.lastRms;
+    check (ref > 0.05, "layer 1 is audible", ref);
+
+    // Instant (Switch Time 0): the gap is short (the 24 ms mute).
+    r.p.switchTimeMs = 0.0f;
+    r.p.layer = 2; auto o0 = r.run (0.6, 0.0);
+    const double gap0 = quietMs (envelope (o0, sr, 5.0), 5.0, ref, 0.2);
+    check (gap0 < 90.0, "Switch Time 0 keeps the short swap", gap0);
+    check (strongestTone (o0, (size_t) (0.2 * sr), sr) == 2, "...and lands on layer 2");
+
+    // 800 ms: a long dip, the first part is layer 2's tone, the last part is layer 1's, and nothing steps.
+    r.p.switchTimeMs = 800.0f;
+    r.maxStep = 0.0;
+    r.p.layer = 1; auto o1 = r.run (1.6, 0.0);
+    const double gap1 = quietMs (envelope (o1, sr, 5.0), 5.0, ref, 0.2);
+    check (gap1 > 120.0 && gap1 < 450.0 && gap1 > 2.0 * gap0, "Switch Time 800 ms gives a much longer fade through quiet than 0", gap1, gap0);
+    const auto e1 = envelope (o1, sr, 20.0);
+    // the quietest point is near the middle of the 800 ms (swap time), within a generous window around 400 ms (+ engine latency)
+    size_t qi = 0; for (size_t i = 0; i < e1.size(); ++i) if (e1[i] < e1[qi]) qi = i;
+    const double qms = (double) qi * 20.0;
+    check (qms > 250.0 && qms < 650.0, "the quietest moment is mid-way through the fade", qms);
+    check (e1[qi] < 0.1 * ref, "it fades almost to silence", e1[qi] / ref);
+    std::vector<float> head (o1.begin(), o1.begin() + (long) (0.18 * sr)), tail (o1.end() - (long) (0.3 * sr), o1.end());
+    check (strongestTone (tail, tail.size(), sr) == 1, "after the fade the new layer is playing");
+    check (r.maxStep < 0.12, "no step in the output during a long fade", r.maxStep);
+    check (r.finite, "output stays finite");
+    check (r.e.loadedLayer() == 1, "the engine reports the new layer as playing", r.e.loadedLayer());
+
+    // The fade is smooth: no 20 ms window jumps up or down by more than half of the reference in one step (a click/step would).
+    double worst = 0; for (size_t i = 1; i < e1.size(); ++i) worst = std::max (worst, std::fabs (e1[i] - e1[i - 1]));
+    check (worst < 0.5 * ref, "envelope changes gradually", worst / ref);
+
+    // Switch asked for again while fading in: ends on the last one asked for, without getting stuck quiet.
+    r.p.switchTimeMs = 400.0f;
+    r.p.layer = 2; r.run (0.3, 0.0);
+    r.p.layer = 3; r.run (0.05, 0.0);
+    r.p.layer = 1; r.run (0.1, 0.0);
+    r.p.layer = 3; r.run (1.5, 0.0);
+    double a3 = 0; check (r.listen (&a3) == 3, "rapid switching ends on the last layer asked for", a3);
+    check (r.lastRms > 0.7 * ref, "and it is back at full level", r.lastRms / ref);
+
+    // Switch Time changed back to 0 half-way through a fade: still finishes, at full level, right layer.
+    r.p.switchTimeMs = 1000.0f; r.p.layer = 1; r.run (0.3, 0.0);
+    r.p.switchTimeMs = 0.0f;    r.run (1.5, 0.0);
+    check (r.listen() == 1, "changing Switch Time mid-fade still lands on the layer");
+    check (r.lastRms > 0.7 * ref, "at full level", r.lastRms / ref);
+
+    // Going to Live and back with a fade.
+    r.p.switchTimeMs = 200.0f;
+    r.p.layer = 0; r.run (0.8, 0.0);
+    check (r.e.loadedLayer() == 0, "Live is selected after the fade");
+    r.p.layer = 2; r.run (0.8, 0.0);
+    check (r.listen() == 2, "and back to a layer");
+}
+
+// ---- N: WAV files --------------------------------------------------------------------------------------------------------------
+static std::vector<uint8_t> wavBytes (int format, int ch, int bits, int rate, const std::vector<double>& interleaved, bool extensible = false)
+{
+    std::vector<uint8_t> v;
+    auto w32 = [&] (uint32_t x) { for (int i = 0; i < 4; ++i) v.push_back ((uint8_t) (x >> (8 * i))); };
+    auto w16 = [&] (uint16_t x) { v.push_back ((uint8_t) x); v.push_back ((uint8_t) (x >> 8)); };
+    auto tag = [&] (const char* s) { for (int i = 0; i < 4; ++i) v.push_back ((uint8_t) s[i]); };
+    const size_t bytes = interleaved.size() * (size_t) (bits / 8);
+    tag ("RIFF"); w32 ((uint32_t) (4 + (8 + (extensible ? 40 : 16)) + 8 + bytes)); tag ("WAVE");
+    tag ("fmt "); w32 (extensible ? 40 : 16); w16 (extensible ? 0xFFFE : (uint16_t) format); w16 ((uint16_t) ch); w32 ((uint32_t) rate);
+    w32 ((uint32_t) (rate * ch * bits / 8)); w16 ((uint16_t) (ch * bits / 8)); w16 ((uint16_t) bits);
+    if (extensible) { w16 (22); w16 ((uint16_t) bits); w32 (0); w16 ((uint16_t) format); for (int i = 0; i < 14; ++i) v.push_back (0); }
+    tag ("data"); w32 ((uint32_t) bytes);
+    for (double x : interleaved)
+    {
+        if (format == 3 && bits == 32) { float f = (float) x; uint32_t u; std::memcpy (&u, &f, 4); w32 (u); }
+        else if (format == 3) { double f = x; uint64_t u; std::memcpy (&u, &f, 8); w32 ((uint32_t) u); w32 ((uint32_t) (u >> 32)); }
+        else if (bits == 8)  v.push_back ((uint8_t) (int) std::lround (x * 127.0 + 128.0));
+        else if (bits == 16) w16 ((uint16_t) (int16_t) std::lround (x * 32767.0));
+        else if (bits == 24) { const int s = (int) std::lround (x * 8388607.0); v.push_back ((uint8_t) s); v.push_back ((uint8_t) (s >> 8)); v.push_back ((uint8_t) (s >> 16)); }
+        else                 w32 ((uint32_t) (int32_t) std::lround (x * 2147483647.0));
+    }
+    return v;
+}
+
+static void testWavFiles ()
+{
+    std::printf ("[N1] WAV reading and writing\n");
+    // write -> read is exact for 16-bit values
+    LayerAudio a; a.channels = 2; a.sampleRate = 44100.0;
+    for (int i = 0; i < 1000; ++i) { a.ch[0].push_back ((float) ((i * 37) % 65536 - 32768) / 32768.0f); a.ch[1].push_back ((float) ((i * 91) % 65536 - 32768) / 32768.0f); }
+    auto bytes = writeWav16 (a);
+    LayerAudio b; std::string err;
+    check (readWav (bytes.data(), bytes.size(), b, err), "reads what it wrote", 0, 0);
+    check (b.channels == 2 && b.sampleRate == 44100.0 && b.frames() == 1000, "format and length survive", b.channels, (double) b.frames());
+    bool same = true; for (size_t i = 0; i < 1000; ++i) same &= (b.ch[0][i] == a.ch[0][i] && b.ch[1][i] == a.ch[1][i]);
+    check (same, "16-bit samples survive exactly");
+    LayerAudio m; m.channels = 1; m.sampleRate = 16000.0; m.ch[0] = { 0.0f, 0.5f, -0.5f, 0.25f };
+    auto mb = writeWav16 (m); LayerAudio m2;
+    check (readWav (mb.data(), mb.size(), m2, err) && m2.channels == 1 && m2.frames() == 4 && m2.sampleRate == 16000.0, "mono file");
+
+    // other formats
+    const std::vector<double> s = { 0.5, -0.5, 0.25, -0.25, 1.0, -1.0 };    // 3 stereo frames
+    struct Case { int fmt, bits; bool ext; double tol; const char* name; };
+    for (const Case c : { Case { 1, 8, false, 0.01, "8-bit" }, Case { 1, 16, false, 1e-4, "16-bit" }, Case { 1, 24, false, 1e-6, "24-bit" },
+                          Case { 1, 32, false, 1e-6, "32-bit int" }, Case { 3, 32, false, 1e-6, "32-bit float" }, Case { 3, 64, false, 1e-9, "64-bit float" },
+                          Case { 1, 24, true, 1e-6, "24-bit extensible" }, Case { 3, 32, true, 1e-6, "float extensible" } })
+    {
+        auto wb = wavBytes (c.fmt, 2, c.bits, 48000, s, c.ext);
+        LayerAudio r;
+        const bool ok = readWav (wb.data(), wb.size(), r, err);
+        check (ok && r.frames() == 3 && r.channels == 2, c.name, ok, (double) r.frames());
+        if (ok) { double worst = 0; for (size_t i = 0; i < 3; ++i) { worst = std::max (worst, std::fabs ((double) r.ch[0][i] - s[2 * i])); worst = std::max (worst, std::fabs ((double) r.ch[1][i] - s[2 * i + 1])); }
+                  check (worst < c.tol + 1e-3 || (c.bits == 32 && c.fmt == 1 && worst < 2e-3), c.name, worst, c.tol); }
+    }
+    // more than two channels keeps the first two
+    auto six = wavBytes (1, 6, 16, 48000, std::vector<double> { 0.1, 0.2, 0.3, 0.4, 0.5, 0.6 });
+    LayerAudio s6; check (readWav (six.data(), six.size(), s6, err) && s6.channels == 2 && s6.frames() == 1 && std::fabs (s6.ch[1][0] - 0.2f) < 1e-3, "six-channel file keeps the first two");
+    // a data chunk that claims more than the file holds (streamed files)
+    auto cut = wavBytes (1, 1, 16, 48000, std::vector<double> (100, 0.1)); cut.resize (cut.size() - 60);
+    LayerAudio c2; check (readWav (cut.data(), cut.size(), c2, err) && c2.frames() == 70, "a cut-off data chunk reads what is there", (double) c2.frames());
+
+    // things that must be refused, each with a message
+    std::vector<uint8_t> junk (200, 0x41);
+    check (! readWav (junk.data(), junk.size(), b, err) && ! err.empty(), "garbage is refused");
+    check (! readWav (bytes.data(), 20, b, err) && ! err.empty(), "a truncated header is refused");
+    check (! readWav (bytes.data(), 0, b, err), "an empty file is refused");
+    auto adpcm = wavBytes (1, 1, 16, 48000, std::vector<double> (10, 0.1)); adpcm[20] = 2;   // format tag 2 = ADPCM
+    check (! readWav (adpcm.data(), adpcm.size(), b, err) && ! err.empty(), "compressed WAV is refused");
+    auto nodata = wavBytes (1, 1, 16, 48000, {}); check (! readWav (nodata.data(), nodata.size(), b, err), "a WAV with no samples is refused");
+    auto badRate = wavBytes (1, 1, 16, 5, std::vector<double> (10, 0.1)); check (! readWav (badRate.data(), badRate.size(), b, err), "a silly sample rate is refused");
+    // random garbage with a valid header start must never crash
+    uint32_t rng = 12345; int survived = 0;
+    for (int k = 0; k < 300; ++k)
+    {
+        auto g = wavBytes (1, 2, 16, 48000, std::vector<double> (64, 0.1));
+        for (int j = 0; j < 6; ++j) { rng = rng * 1664525u + 1013904223u; g[rng % g.size()] = (uint8_t) (rng >> 24); }
+        if (k % 3 == 0) g.resize (rng % g.size());
+        LayerAudio q; std::string e; readWav (g.data(), g.size(), q, e); ++survived;
+    }
+    check (survived == 300, "300 damaged files never crash the reader");
+}
+
+static Engine::IoResult waitExport (Rig& r, LayerAudio& out)
+{
+    for (int i = 0; i < 40; ++i) { r.run (0.02, 0.0); const auto s = r.e.pollExport (out); if (s != Engine::IoNone) return s; }
+    return Engine::IoNone;
+}
+static Engine::IoResult waitImport (Rig& r)
+{
+    for (int i = 0; i < 40; ++i) { r.run (0.02, 0.0); const auto s = r.e.pollImport(); if (s != Engine::IoNone) return s; }
+    return Engine::IoNone;
+}
+
+static LayerAudio makeTone (double rate, double seconds, double hzL, double hzR, float amp = 0.5f, bool mono = false)
+{
+    LayerAudio a; a.channels = mono ? 1 : 2; a.sampleRate = rate;
+    const size_t n = (size_t) (seconds * rate);
+    a.ch[0].resize (n); if (! mono) a.ch[1].resize (n);
+    for (size_t i = 0; i < n; ++i)
+    {
+        a.ch[0][i] = amp * (float) std::sin (2.0 * 3.14159265358979 * hzL * (double) i / rate);
+        if (! mono) a.ch[1][i] = amp * (float) std::sin (2.0 * 3.14159265358979 * hzR * (double) i / rate);
+    }
+    return a;
+}
+
+// The audio stored in a layer, decoded (16-bit or low-fi), frames = the layer length.
+static std::vector<float> storedAudio (Rig& r, int layer, int ch, bool lowFi)
+{
+    const auto& m = r.e.layerBytes (layer, ch);
+    const size_t n = lowFi ? m.size() : m.size() / 2;
+    std::vector<float> x (n > 8 ? n - 8 : 0);
+    for (size_t i = 0; i < x.size(); ++i)
+        x[i] = lowFi ? (float) clouds::MuLaw2Lin (m[i]) / 32768.0f : (float) (int16_t) (m[2 * i] | (m[2 * i + 1] << 8)) / 32768.0f;
+    return x;
+}
+static size_t framesOf (Rig& r, int layer) { return (size_t) std::lround (r.e.layerStatus (layer).seconds * storedRate (r.p.engineRate, r.p.quality)); }
+
+// Which of the layer tones is in a stretch of audio, and how loud (amplitude)
+static int toneIn (const std::vector<float>& x, size_t from, size_t count, double sr, double* amp = nullptr)
+{
+    std::vector<float> seg (x.begin() + (long) from, x.begin() + (long) std::min (x.size(), from + count));
+    return strongestTone (seg, seg.size(), sr, amp);
+}
+
+static void testSaveLoad (int engineRate, int quality)
+{
+    const bool lowFi = quality >= 2, mono = (quality & 1) != 0;
+    std::printf ("[N2] Save / Load a layer (engine %s, quality %d)\n", engineRate ? "48k" : "32k", quality);
+    Rig r (48000.0, engineRate, quality, 0, Engine::LoopingDelay);
+    const double rate = storedRate (engineRate, quality);
+    const auto fmt = r.e.layerFormat();
+    check (fmt.valid && fmt.lowFi == lowFi && fmt.channels == (mono ? 1 : 2) && fmt.sampleRate == rate, "layer format is published correctly", fmt.valid, fmt.sampleRate);
+    check (fmt.capFrames > (int) (0.9 * rate), "layer is about a second long", fmt.capFrames);
+
+    // ---- Save: record, export, check the audio
+    r.select (3); r.recordFull (kTone[3]);
+    LayerAudio ex;
+    check (r.e.requestExport (3), "export request accepted");
+    check (! r.e.requestExport (3), "a second request while one is pending is refused");
+    check (waitExport (r, ex) == Engine::ExportReady, "export arrives");
+    check (ex.channels == (mono ? 1 : 2) && ex.sampleRate == rate, "exported format", ex.channels, ex.sampleRate);
+    check (ex.frames() == framesOf (r, 3) || std::llabs ((long long) ex.frames() - (long long) framesOf (r, 3)) <= 1, "exported length is the layer length", (double) ex.frames(), (double) framesOf (r, 3));
+    double amp = 0; check (toneIn (ex.ch[0], 0, ex.frames() - 64, rate, &amp) == 3, "exported audio is the recorded tone", amp);
+    check (amp > 0.35 && amp < 0.65, "at the recorded level", amp);
+    LayerAudio none; r.e.requestExport (5);
+    check (waitExport (r, none) == Engine::ExportEmpty, "exporting an empty layer is reported as empty");
+    check (r.e.requestExport (3), "export works again after that");
+    LayerAudio ex2; waitExport (r, ex2);
+
+    // ---- full cycle like the plug-in does it: WAV bytes in between
+    const auto wav = writeWav16 (ex);
+    LayerAudio back; std::string err; check (readWav (wav.data(), wav.size(), back, err), "the saved WAV reads back");
+    r.select (4);
+    check (r.e.submitImport (4, back, err), "load accepted");
+    check (waitImport (r) == Engine::ImportOk, "load applied");
+    check (r.e.layerStatus (4).state == Engine::LayerFilled, "layer 4 is filled");
+    check (std::fabs (r.e.layerStatus (4).seconds - r.e.layerStatus (3).seconds) < 0.002, "same length as layer 3", r.e.layerStatus (4).seconds, r.e.layerStatus (3).seconds);
+    for (int ch = 0; ch < (mono ? 1 : 2); ++ch)
+    {
+        const auto A = storedAudio (r, 3, ch, lowFi), B = storedAudio (r, 4, ch, lowFi);
+        double worst = 0; for (size_t i = 0; i < std::min (A.size(), B.size()); ++i) worst = std::max (worst, std::fabs ((double) A[i] - B[i]));
+        check (A.size() == B.size() && worst < 1e-6, "save then load gives back the same samples", worst, (double) A.size());
+    }
+    check (r.e.layerBytes (3, 0).size() == r.e.layerBytes (4, 0).size(), "same memory size");
+    double a4 = 0; check (r.listen (&a4) == 3, "layer 4 now plays layer 3's tone", a4);
+    check (r.lastRms > 0.05, "audibly", r.lastRms);
+
+    // ---- Load files at other rates, mono / stereo, longer than the layer
+    struct F { double rate; bool monoFile; double secs; const char* what; };
+    for (const F f : { F { 48000.0, false, 0.6, "48 kHz stereo" }, F { 44100.0, false, 0.6, "44.1 kHz stereo" }, F { 96000.0, true, 0.6, "96 kHz mono" },
+                       F { 22050.0, true, 0.6, "22.05 kHz mono" }, F { 44100.0, false, 3.0, "3 s file (longer than the layer)" } })
+    {
+        const auto file = makeTone (f.rate, f.secs, kTone[2], kTone[5], 0.5f, f.monoFile);
+        r.select (6);
+        check (r.e.submitImport (6, file, err), f.what);
+        check (waitImport (r) == Engine::ImportOk, f.what);
+        const size_t expectFrames = (size_t) std::min<double> (f.secs * rate, (double) fmt.capFrames);
+        check (std::llabs ((long long) framesOf (r, 6) - (long long) expectFrames) <= 2, "loaded length", (double) framesOf (r, 6), (double) expectFrames);
+        const auto L = storedAudio (r, 6, 0, lowFi);
+        double aL = 0; const int tl = toneIn (L, 400, framesOf (r, 6) - 800, rate, &aL);
+        // the left channel: the file's left tone (a mono layer mixes both channels, so then either tone is expected)
+        const bool stereoFileIntoMonoLayer = mono && ! f.monoFile;
+        check (tl == 2 || (stereoFileIntoMonoLayer && tl == 5) || (stereoFileIntoMonoLayer && tl == -1), f.what, tl, aL);
+        if (! mono)
+        {
+            const auto R = storedAudio (r, 6, 1, lowFi);
+            double aR = 0; const int tr = toneIn (R, 400, framesOf (r, 6) - 800, rate, &aR);
+            check (tr == (f.monoFile ? 2 : 5), "right channel", tr, aR);
+            check (aR > 0.3 && aR < 0.65, "level kept", aR);
+        }
+        if (! stereoFileIntoMonoLayer) check (aL > 0.3 && aL < 0.65, "level kept (left)", aL);
+        // the interpolation tail repeats the start of the audio
+        const auto& mem = r.e.layerBytes (6, 0);
+        bool tailOk = true;
+        for (int k = 0; k < 8; ++k)
+        {
+            if (lowFi) tailOk &= mem[(size_t) fmt.capFrames + (size_t) k] == mem[(size_t) k];
+            else       tailOk &= std::memcmp (&mem[((size_t) fmt.capFrames + (size_t) k) * 2], &mem[(size_t) k * 2], 2) == 0;
+        }
+        check (tailOk, "the 8-sample tail after the layer repeats the start");
+    }
+
+    // ---- A short file leaves the rest of the layer silent
+    {
+        const auto file = makeTone (44100.0, 0.25, kTone[1], kTone[1]);
+        r.select (5); r.e.submitImport (5, file, err); waitImport (r);
+        const auto L = storedAudio (r, 5, 0, lowFi);
+        const size_t n = framesOf (r, 5);
+        check (std::fabs ((double) n / rate - 0.25) < 0.005, "short file gives a short layer", (double) n / rate);
+        double after = 0; for (size_t i = n + 16; i + 16 < L.size(); ++i) after = std::max (after, (double) std::fabs (L[i]));
+        check (after < 1e-3, "the rest of the layer memory is silent", after);
+    }
+}
+
+// Timing: a click at 0.1 s in the file lands at 0.1 s in the layer (the resampler's delay is taken out).
+static void testImportAlignment ()
+{
+    std::printf ("[N3] a loaded file keeps its timing\n");
+    Rig r (48000.0, 1, 0, 0, Engine::LoopingDelay);
+    std::string err;
+    for (double fileRate : { 44100.0, 96000.0, 22050.0, 48000.0 })
+    {
+        LayerAudio a; a.channels = 1; a.sampleRate = fileRate; a.ch[0].assign ((size_t) (0.5 * fileRate), 0.0f);
+        const size_t at = (size_t) (0.1 * fileRate);
+        a.ch[0][at] = 0.9f;
+        r.select (1);
+        check (r.e.submitImport (1, a, err), "queued");
+        check (waitImport (r) == Engine::ImportOk, "applied");
+        const auto L = storedAudio (r, 1, 0, false);
+        size_t pk = 0; for (size_t i = 0; i < L.size(); ++i) if (std::fabs (L[i]) > std::fabs (L[pk])) pk = i;
+        check (std::llabs ((long long) pk - 4800) <= 3, "click position", (double) pk, 4800.0);
+        check (std::fabs (L[pk]) > 0.2, "click survives resampling (a one-sample click is low-passed)", L[pk]);
+    }
+}
+
+static void testImportEdgeCases ()
+{
+    std::printf ("[N4] loading into a playing layer, while recording, after a format change, and refusals\n");
+    Rig r (48000.0, 1, 0, 0, Engine::LoopingDelay);
+    std::string err;
+    r.select (1); r.recordFull (kTone[1]);
+    check (r.listen() == 1, "layer 1 plays its tone");
+    const double ref = r.lastRms;
+
+    // loading into the layer that is playing: swapped in (with the fade), then plays the new audio
+    check (r.e.submitImport (1, makeTone (48000.0, 1.0, kTone[4], kTone[4]), err), "load into the playing layer");
+    check (waitImport (r) == Engine::ImportOk, "applied");
+    r.run (0.6, 0.0);
+    double a = 0; check (r.listen (&a) == 4, "the playing layer now plays the loaded audio", a);
+    check (r.lastRms > 0.5 * ref, "at a similar level", r.lastRms / ref);
+    check (r.e.loadedLayer() == 1, "still layer 1");
+
+    // loading into a layer that is not playing leaves the playing one alone
+    check (r.e.submitImport (3, makeTone (48000.0, 1.0, kTone[6], kTone[6]), err), "load into another layer");
+    check (waitImport (r) == Engine::ImportOk, "applied");
+    check (r.listen() == 4, "layer 1 keeps playing");
+    r.select (3); check (r.listen() == 6, "and layer 3 has the loaded audio");
+
+    // refused while recording
+    r.select (2); r.e.recordLayer(); r.run (0.2, kTone[2]);
+    check (r.e.layerStatus (2).state == Engine::LayerRecording, "recording");
+    check (r.e.submitImport (2, makeTone (48000.0, 1.0, kTone[5], kTone[5]), err), "queued");
+    check (waitImport (r) == Engine::ImportRejected, "refused while recording");
+    r.e.recordLayer(); r.run (0.2, 0.0);
+
+    // format changed between queueing and applying
+    check (r.e.submitImport (2, makeTone (48000.0, 1.0, kTone[5], kTone[5]), err), "queued");
+    r.p.quality = 1;
+    check (waitImport (r) == Engine::ImportRejected, "refused if the format changed meanwhile");
+    check (r.e.layerStatus (2).state == Engine::LayerEmpty, "the layer is left empty");
+    r.p.quality = 0; r.run (0.3, 0.0);
+
+    // refusals up front
+    check (! r.e.submitImport (0, makeTone (48000.0, 1.0, 440, 440), err) && ! err.empty(), "layer 0 (Live) is refused");
+    check (! r.e.submitImport (7, makeTone (48000.0, 1.0, 440, 440), err), "layer 7 is refused");
+    LayerAudio empty; empty.channels = 1; empty.sampleRate = 48000.0;
+    check (! r.e.submitImport (1, empty, err) && ! err.empty(), "empty audio is refused");
+
+    // clipping: a file louder than full scale must not wrap around
+    LayerAudio loud = makeTone (48000.0, 0.5, 440, 440, 1.0f); for (auto& s : loud.ch[0]) s *= 3.0f;
+    check (r.e.submitImport (5, loud, err), "loud file queued"); waitImport (r);
+    const auto L = storedAudio (r, 5, 0, false);
+    double mx = 0; bool sane = true; for (size_t i = 100; i + 100 < framesOf (r, 5); ++i) { mx = std::max (mx, (double) std::fabs (L[i])); }
+    // a tone clipped at +-1 stays a clipped tone: its samples are never far from the +-1 rails (no wrap to the opposite sign near peaks)
+    for (size_t i = 101; i + 100 < framesOf (r, 5); ++i) if (std::fabs (L[i] - L[i - 1]) > 0.5) sane = false;
+    check (mx > 0.99 && sane, "overloaded file is clipped, not wrapped", mx);
+
+    // all layers filled by loading, memory untouched by an empty request
+    check (r.e.layerStoredBytes() > 0, "layers hold data");
+}
+
+// Layer length when the buffer is long
+static void testImportLongBuffer ()
+{
+    std::printf ("[N5] loading into 10 s layers\n");
+    Rig r (48000.0, 1, 0, 2, Engine::LoopingDelay);
+    std::string err;
+    r.select (2);
+    check (r.e.submitImport (2, makeTone (44100.0, 4.0, kTone[3], kTone[3]), err), "4 s file queued");
+    check (waitImport (r) == Engine::ImportOk, "applied");
+    check (std::fabs (r.e.layerStatus (2).seconds - 4.0) < 0.01, "4 s layer", r.e.layerStatus (2).seconds);
+    { const auto L = storedAudio (r, 2, 0, false); double am = 0;
+      check (toneIn (L, 1000, framesOf (r, 2) - 2000, 48000.0, &am) == 3 && am > 0.3, "the 4 s of audio is stored (how a layer shorter than the buffer loops depends on Size and Position, as with a short recording)", am); }
+    check (r.e.submitImport (2, makeTone (48000.0, 30.0, kTone[1], kTone[1]), err), "30 s file queued");
+    check (waitImport (r) == Engine::ImportOk, "applied");
+    check (std::fabs (r.e.layerStatus (2).seconds - 10.0) < 0.05, "30 s file is cut to the layer length", r.e.layerStatus (2).seconds);
+    r.run (0.5, 0.0);
+    check (r.listen() == 1, "a full-length loaded layer plays");
+}
+
 int main()
 {
     for (int rate = 0; rate < 2; ++rate)
@@ -504,6 +910,12 @@ int main()
     testFormatChange();
     testRecordIgnoredInLive();
     testSwitchCost();
+    for (int rate = 0; rate < 2; ++rate) testSwitchTime (rate);
+    testWavFiles();
+    for (int rate = 0; rate < 2; ++rate) for (int q = 0; q < 4; ++q) testSaveLoad (rate, q);
+    testImportAlignment();
+    testImportEdgeCases();
+    testImportLongBuffer();
     std::printf ("\nlayers_test: %d checks, %d failed\n", gChecks, gFailed);
     return gFailed == 0 ? 0 : 1;
 }

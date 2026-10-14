@@ -28,7 +28,7 @@ jobs:
           cmake --build build --target rate_compare_test -j4
           ./build/rate_compare_test
 
-      - name: Tests of the layers (record, play, switch, mode trips, clear, re-record, format changes, memory)
+      - name: Tests of the layers (record, play, switch, Switch Time, WAV save/load, mode trips, clear, re-record, format changes, memory)
         run: |
           cmake --build build --target layers_test -j4
           ./build/layers_test
@@ -73,7 +73,9 @@ jobs:
           4. In Logic: Settings > Plug-in Manager > rescan. Look for "particledots: Unofficial SuperParasites Layers"
              (it is a MIDI-controlled effect: a MIDI note-on presses CAPTURE, a held note is GATE).
           5. Layers: pick Layer 1-6, press RECORD (press again to stop early), pick another layer to play it. LIVE is the
-             always-recording buffer. Layers are NOT saved with the Logic project.
+             always-recording buffer. SWITCH TIME = how long the layer change takes (Instant, or a fade out and in).
+             SAVE WAV / LOAD WAV write a layer to a WAV file or put a WAV file into it (Logic must be running audio).
+             Layers are NOT saved with the Logic project - save them as WAV files to keep them.
           TXT
           ditto -c -k --keepParent dist SuperParasites-Layers-macOS.zip
 

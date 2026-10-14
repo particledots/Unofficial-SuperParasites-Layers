@@ -40,6 +40,12 @@ public:
     void requestClearLayer()  { engine.clearLayer(); }
     SuperParasitesEngine::LayerStatus layerStatus (int layer) const { return engine.layerStatus (layer); }
     int loadedLayer() const { return engine.loadedLayer(); }
+    // Save / Load a layer as a WAV file (the editor does the file dialogs; the engine hands the audio over safely).
+    SuperParasitesEngine::LayerFormat layerFormat() const { return engine.layerFormat(); }
+    bool requestExportLayer (int layer) { return engine.requestExport (layer); }
+    SuperParasitesEngine::IoResult pollExport (LayerAudio& out) { return engine.pollExport (out); }
+    bool submitImportLayer (int layer, const LayerAudio& a, std::string& whyNot) { return engine.submitImport (layer, a, whyNot); }
+    SuperParasitesEngine::IoResult pollImport() { return engine.pollImport(); }
 
     juce::AudioProcessorValueTreeState apvts;
 

@@ -36,6 +36,7 @@ juce_add_plugin(SuperParasitesLayers
 # --- DSP core: vendored SuperParasites/stmlib code + our JUCE-free wrapper, built with plain flags ---
 add_library(superparasites_core STATIC
   src/SuperParasitesEngine.cpp
+  src/LayerAudio.cpp
   third_party/supercell/dsp/correlator.cc
   third_party/supercell/dsp/granular_processor.cc
   third_party/supercell/dsp/kammerl_player.cc

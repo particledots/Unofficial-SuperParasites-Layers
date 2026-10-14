@@ -11,6 +11,7 @@
 #include <vector>
 #include <cstdint>
 #include "Resampler.h"
+#include "LayerAudio.h"
 
 namespace clouds { class GranularProcessor; }
 
@@ -36,6 +37,7 @@ public:
         int bufferLength = 0; // index into bufferSeconds(): how much sample memory the recording buffer gets (Extended)
         int engineRate = 0;   // 0 = 32 kHz (the original), 1 = 48 kHz (HD)
         int layer = 0;        // 0 = Live (the always-recording buffer, as in HD); 1..kNumLayers = a stored layer
+        float switchTimeMs = 0.0f;   // layer switching: 0 = the short instant swap (24 ms mute); above 0 = fade out then fade in over this many ms in total
     };
 
     // Recording-buffer sizes offered by the Extended build. Index 0 is the module's own memory (about 1 second per channel at
@@ -65,6 +67,20 @@ public:
     void clearLayer() { clearRequested.store (true); }
     LayerStatus layerStatus (int layer) const;   // layer is 1..kNumLayers
     int loadedLayer() const { return uiLoaded.load(); }   // which layer's audio the engine is playing (0 = Live)
+    static constexpr float kMaxSwitchMs = 2000.0f;
+
+    // ---- Saving and loading a layer's audio as WAV (UI thread; the audio thread does the hand-over, so nothing here blocks it) ----
+    // The format layers are stored in right now (depends on Quality, Buffer Length and Engine Rate).
+    struct LayerFormat { bool valid = false; int channels = 2; bool lowFi = false; double sampleRate = 48000.0; int capFrames = 0; };
+    LayerFormat layerFormat() const;
+    enum IoResult { IoNone = 0, ExportReady, ExportEmpty, ImportOk, ImportRejected };
+    // Save: ask for a copy of a filled layer; the audio thread supplies it within a few ms of running. Then poll until it is ready.
+    bool requestExport (int layer);                  // false if a request is already in progress
+    IoResult pollExport (LayerAudio& out);           // IoNone while pending; ExportReady fills `out` (at the layer's own sample rate)
+    // Load: convert the audio to the layer format (resampling, mono/stereo, 16-bit or 8-bit low-fi), truncated to the layer length,
+    // and hand it to the audio thread. Returns false (with a reason) if it can't be queued right now. Then poll for the outcome.
+    bool submitImport (int layer, const LayerAudio& audio, std::string& whyNot);
+    IoResult pollImport();                           // IoNone while pending; ImportOk / ImportRejected when done (once)
     static bool modeUsesLayers (int mode);
     // For tests: the stored bytes of a layer's channel, and the bytes all layers hold at the moment.
     const std::vector<uint8_t>& layerBytes (int layer, int channel) const { return layers[layer - 1].mem[channel]; }
@@ -98,6 +114,7 @@ private:
         bool filled = false;
         int32_t head[2] = { 0, 0 };      // write head of each channel when the recording ended (playback is relative to it)
         float seconds = 0.0f;
+        int32_t frames = 0;              // length in samples per channel
         std::vector<uint8_t> mem[2];     // raw copy of the processor's sample memory (16-bit, or low-fi 8-bit)
     };
     Layer layers[kNumLayers];
@@ -109,6 +126,23 @@ private:
     int recLayer = 0;
     bool recording = false, switching = false, freezeWasForced = false, forcedFreeze = false;
     int fadeLeft = 0;
+    // soft switch (Switch Time > 0): own gain ramp on the output, fade out -> swap -> fade in
+    bool softFade = false, fadingIn = false, reloadNeeded = false;
+    float fadePos = 1.0f, fadeStep = 0.0f, gainPrev = 1.0f, gainNow = 1.0f;
+    void resetFade() { switching = false; softFade = false; fadingIn = false; reloadNeeded = false; fadePos = 1.0f; fadeStep = 0.0f; gainPrev = gainNow = 1.0f; }
+    // format of the stored layers, published for the UI thread
+    std::atomic<bool> fmtValid { false }, fmtLowFi { false };
+    std::atomic<int> fmtChannels { 2 }, fmtCap { 0 };
+    std::atomic<double> fmtRate { 48000.0 };
+    std::atomic<int64_t> fmtBytes0 { 0 }, fmtBytes1 { 0 };
+    // hand-over slots (UI thread <-> audio thread)
+    std::atomic<int> exportState { 0 }, importState { 0 }, importOutcome { IoNone }, exportLayerReq { 0 };
+    int exportFrames = 0; double exportRate = 0.0; bool exportLowFi = false;
+    std::vector<uint8_t> exportMem[2];
+    int importLayerReq = 0; int32_t importFrames = 0; int64_t importBytes0 = 0, importBytes1 = 0; bool importLowFi = false;
+    std::vector<uint8_t> importMem[2];
+    void publishFormat();
+    void serviceTransfers();                       // audio thread: fulfils an export request / applies a staged import
     int32_t lastGeneration = 0;
     int keyQuality = -1, keyEngineRate = -1, keyBufferLength = -1;
     void layersBeforeBlock (const Params& p);      // requests, layer switching, hold/freeze flags (once per 1 ms block)

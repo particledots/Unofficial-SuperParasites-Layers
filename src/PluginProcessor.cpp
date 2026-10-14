@@ -42,6 +42,22 @@ juce::AudioProcessorValueTreeState::ParameterLayout SuperParasitesAudioProcessor
                  juce::StringArray { "32 kHz (original)", "48 kHz (HD)" }, 0));
     p.push_back (std::make_unique<APC> (juce::ParameterID { "layer", 1 }, "Layer",
                  juce::StringArray { "Live", "Layer 1", "Layer 2", "Layer 3", "Layer 4", "Layer 5", "Layer 6" }, 0));
+    // How long a layer switch takes. 0 = the short instant swap; above 0 the sound fades out, the layer is swapped, and it fades back in.
+    p.push_back (std::make_unique<APF> (juce::ParameterID { "switch_time", 1 }, "Switch Time",
+                 juce::NormalisableRange<float> (0.f, SuperParasitesEngine::kMaxSwitchMs, 1.f, 0.4f), 0.f,
+                 juce::AudioParameterFloatAttributes()
+                     .withStringFromValueFunction ([] (float v, int)
+                     {
+                         if (v < 0.5f) return juce::String ("Instant");
+                         return v < 1000.f ? juce::String ((int) std::lround (v)) + " ms" : juce::String (v / 1000.f, 2) + " s";
+                     })
+                     .withValueFromStringFunction ([] (const juce::String& s)
+                     {
+                         const auto t = s.trim().toLowerCase();
+                         if (t.startsWith ("inst") || t.isEmpty()) return 0.f;
+                         const float x = t.getFloatValue();
+                         return t.endsWith ("ms") ? x : (t.endsWith ("s") ? x * 1000.f : x);
+                     })));
     return { p.begin(), p.end() };
 }
 
@@ -110,6 +126,7 @@ void SuperParasitesAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     prm.bufferLength = (int) v ("buffer_length");
     prm.engineRate = (int) v ("engine_rate");
     prm.layer = (int) v ("layer");
+    prm.switchTimeMs = v ("switch_time");
 
     const float* l = buffer.getReadPointer (0);
     const float* r = buffer.getReadPointer (chans > 1 ? 1 : 0);
