@@ -161,6 +161,8 @@ how any of it sounds beyond that.
 * The plug-in and editor sources compile against the JUCE 8.0.6 headers (syntax check, Linux, no warnings; checked that it does report a deliberate error).
 * Cost of a layer switch on this Linux machine: slowest 512-sample `process()` call while switching 0.5 ms with 10 s layers and 1.0 ms with 20 s layers (48 kHz stereo).
 
+**Sixth build (Also Play Pan): every step passed on the macOS runner, run 38570854827, commit `be580ee`.**
+
 **Fifth build (Also Play, two layers together): every step passed on the macOS runner, run 38565811679, commit `efd2eab`.** Four deliberate breaks (second layer not mixed in; level ignored; second layer not loaded; same layer allowed twice) were each caught by the tests.
 
 **Fourth build (Switch Style / Crossfade): every step passed on the macOS runner, run 38519039695, commit `f5b9929`** (all tests, Live = HD, arm64 + x86_64 AU and VST3, packaging).
@@ -169,7 +171,7 @@ how any of it sounds beyond that.
 arm64 + x86_64 AU and VST3 build, ad-hoc signing, packaging and the `SuperParasites-Layers-macOS` artifact. (I can see each step's pass / fail result, not its log text.)
 
 **Not verified**
-* **ALSO PLAY (fifth build) in Logic and by ear:** how it sounds, Mac CPU with it on, and with its menu / level automated.
+* **ALSO PLAY PAN (sixth build) in Logic and by ear** (Also Play itself you tested: works, balance good). Pan: how it sounds, Mac CPU with it on, and with its menu / level automated.
 * **The Crossfade by ear and in Logic** (fourth build): how it sounds, whether the 0.2 s delay and the extra CPU matter on your Macs, and how it behaves with a Layer automation lane.
 * **Switch Time measured, not heard.** In the test (four modes, Switch Time 800 ms, including your Granular settings) the fade-out and the fade-in are symmetric: the level is below
   half after about 130-200 ms, quietest at about 400 ms, back above half at about 600 ms and above 90 % by 670-720 ms (Pitch shifter, Looping delay, Beat repeat; Granular is too irregular
