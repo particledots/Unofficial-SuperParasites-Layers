@@ -115,7 +115,7 @@ is why Switch Time was added). Nothing below is a claim about how any of it soun
 * The plug-in and editor sources compile against the JUCE 8.0.6 headers (syntax check, Linux, no warnings; checked that it does report a deliberate error).
 * Cost of a layer switch on this Linux machine: slowest 512-sample `process()` call while switching 0.5 ms with 10 s layers and 1.0 ms with 20 s layers (48 kHz stereo).
 
-**Verified on GitHub Actions (macOS runner):** see the run for the latest commit; the steps are `engine_test`, `rate_compare_test`, `layers_test`, the Live = HD comparison, the universal
+**Verified on GitHub Actions (macOS runner), run 38492051213, commit `d0bd3b1`: every step passed.** The steps are `engine_test`, `rate_compare_test`, `layers_test`, the Live = HD comparison, the universal
 arm64 + x86_64 AU and VST3 build, ad-hoc signing, packaging and the `SuperParasites-Layers-macOS` artifact. (I can see each step's pass / fail result, not its log text.)
 
 **Not verified**
