@@ -52,6 +52,22 @@ jobs:
           wc -l hd.txt layers.txt
           diff hd.txt layers.txt && echo "IDENTICAL: 128 mode/quality/buffer-length/engine-rate combinations"
 
+      - name: Output level tests (fully dry output = input level within 0.1 dB in every mode with a dry path, limiter, no clipping)
+        run: |
+          cmake --build build --target level_test -j4
+          ./build/level_test
+
+      - name: Mutation check of the output stage (the level test must FAIL when the gain, its default, its dB conversion or the limiter is broken)
+        run: bash tests/mutation_check.sh
+
+      - name: Whole plug-in level test (the real processor class: Output Level parameter, default, dry output = input, limiter)
+        run: |
+          cmake --build build --target proc_level_test -j4
+          ./build/proc_level_test
+
+      - name: Wiring mutation check (the whole plug-in test must FAIL when the stage is not called, the level is not read, or the default is wrong)
+        run: bash tests/wiring_mutation_check.sh build
+
       - name: Build AU + VST3
         run: cmake --build build --target SuperParasitesLayers_AU SuperParasitesLayers_VST3 -j4
 
@@ -83,6 +99,10 @@ jobs:
              Presets and projects remember the links (not the audio) and reload the layers; if a file was moved it is found
              again in the home folder (FOLDER... button; default ~/Music/Unofficial Layers) by its fingerprint.
              RECORD is an automatable parameter. A layer marked "unsaved" has no file and will not come back.
+          6. OUTPUT LEVEL (version 0.2.0): the firmware makes the output about 9 dB quieter than the input (with Dry/Wet at 0 in most modes). The new
+             OUTPUT LEVEL knob (default +9.03 dB) makes that up, followed by a soft limiter that keeps loud sounds from clipping. Presets made before
+             0.2.0 have no Output Level and will come out about 9 dB louder: that is the fix, so lower the knob if you want the old level.
+             Beat repeat and Resonestor have no dry path in the firmware, so Output Level does not make them match the input exactly.
           TXT
           ditto -c -k --keepParent dist SuperParasites-Layers-macOS.zip
 

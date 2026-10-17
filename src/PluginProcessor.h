@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "SuperParasitesEngine.h"
 #include "LayerLibrary.h"
+#include "OutputStage.h"
 
 class SuperParasitesAudioProcessor : public juce::AudioProcessor, private juce::Timer
 {
@@ -55,6 +56,7 @@ private:
     void timerCallback() override;
 
     SuperParasitesEngine engine;
+    OutputStage::Stage outputStage;
     LayerLibrary library { engine };
     juce::File homeFolder;
     bool lastRecordParam = false, recordSeen = false;

@@ -46,7 +46,7 @@ private:
     SuperParasitesLookAndFeel laf;
 
     Knob position, size, pitch, density, texture;
-    Knob dryWet, spread, feedback, reverb;
+    Knob dryWet, spread, feedback, reverb, outputLevel;
     Menu mode, quality, bufferLength, engineRate;
     juce::ToggleButton freeze { "FREEZE" }, reverse { "REVERSE" }, gate { "GATE" }, pitchMidi { "PITCH FOLLOWS MIDI" };
     juce::TextButton capture { "CAPTURE" };
