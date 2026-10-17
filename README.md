@@ -137,6 +137,8 @@ Download `SuperParasites-Layers-macOS` from the latest passing run in the Action
 
 ## Verified and not verified
 
+**Output Level (version 0.2.0): every step passed on the macOS runner, run 39047118805, commit `943333d`** (all earlier tests, Live = HD, the four new level steps, the universal arm64 + x86_64 AU and VST3 build, signing, packaging; an earlier run on `50253ab` never started because a workflow step name was not valid YAML, fixed in `943333d`). I can see each step's pass / fail, not its log text. Artifact `SuperParasites-Layers-macOS`.
+
 **Output Level (version 0.2.0) - measured and tested here (Linux, g++, October 2026), not listened to**
 * `tests/level_test.cpp`: 10,573 checks, 0 failed. Fully dry (Dry/Wet = 0) at the default Output Level, engine + stage output equals the input level within 0.1 dB in each of the six dry-path modes, at 44.1 / 48 / 96 kHz
   host, both engine rates, all four qualities, input -18 dBFS (and -6 dBFS at 48 kHz): 192 runs, worst deviation 0.064 dB. The limiter: identity up to its threshold, odd-symmetric, monotonic, slope 1 at the threshold,
@@ -147,7 +149,7 @@ Download `SuperParasites-Layers-macOS` from the latest passing run in the Action
   a preset saved without an Output Level loads at +9.03 dB (and keeps its other settings), also into an instance whose knob had been turned to 0 dB.
 * **Mutation checks (the tests fail when the level is broken).** `tests/mutation_check.sh` breaks `OutputStage.h` in four ways (gain removed, default 8.0 dB instead of 9.03, wrong dB-to-gain factor, limiter removed) and the level test failed for every one
   (17, 13, 19 and 4,035 failed checks), while passing on the unbroken code. `tests/wiring_mutation_check.sh` breaks `processBlock` in three ways (stage not called, level parameter not read, parameter default 0 dB) and the whole-plug-in test failed each
-  time (9, 9 and 7 failed checks); the source is restored afterwards. Both are workflow steps.
+  time (9, 9 and 8 failed checks); the source is restored afterwards. Both are workflow steps.
 * The existing suites still pass with the new CMake targets (`engine_test`, `rate_compare_test`; the engine and firmware code are not touched, so the Live = HD check below is unaffected).
 * The editor source (the fifth knob) compiles against JUCE 8.0.6 with the rest of the plug-in. **How it looks is not checked: I have not seen the editor.**
 * **Not verified:** how it sounds; that the level you read on Logic's meters / faders now matches; the 16-bit noise floor at +9 dB in quiet passages; the knob row in Logic; behaviour when automated; any
