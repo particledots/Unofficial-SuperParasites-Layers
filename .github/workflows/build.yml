@@ -60,7 +60,7 @@ jobs:
       - name: Mutation check of the output stage (the level test must FAIL when the gain, its default, its dB conversion or the limiter is broken)
         run: bash tests/mutation_check.sh
 
-      - name: Whole plug-in level test (the real processor class: Output Level parameter, default, dry output = input, limiter)
+      - name: Whole plug-in level test (the real processor class - Output Level parameter, default, dry output = input, limiter)
         run: |
           cmake --build build --target proc_level_test -j4
           ./build/proc_level_test
