@@ -35,6 +35,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout SuperParasitesAudioProcessor
                  juce::AudioParameterFloatAttributes().withLabel ("dB")
                      .withStringFromValueFunction ([] (float v, int) { return (v >= 0.0f ? "+" : "") + juce::String (v, 2) + " dB"; })
                      .withValueFromStringFunction ([] (const juce::String& s) { return s.retainCharacters ("-+.0123456789").getFloatValue(); })));
+    // Limiter switch (version 0.3.0): on keeps loud sounds from clipping (default, as in 0.2.0); off lets them through unshaped.
+    p.push_back (std::make_unique<APB> (juce::ParameterID { "limiter", 1 }, "Limiter", OutputStage::kDefaultLimiterOn));
     p.push_back (std::make_unique<APB> (juce::ParameterID { "freeze", 1 }, "Freeze", false));
     p.push_back (std::make_unique<APB> (juce::ParameterID { "reverse", 1 }, "Reverse (granular)", false));
     p.push_back (std::make_unique<APB> (juce::ParameterID { "gate", 1 }, "Gate", false));
@@ -250,6 +252,7 @@ void SuperParasitesAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
 
     // Output Level and the soft limiter come last, after the engine, so the engine's output is untouched (Live still equals HD sample for sample).
     outputStage.setLevelDb (v ("output_level"));
+    outputStage.setLimiterOn (v ("limiter") > 0.5f);
     outputStage.process (buffer.getArrayOfWritePointers(), juce::jmin (chans, 2), n);
 }
 

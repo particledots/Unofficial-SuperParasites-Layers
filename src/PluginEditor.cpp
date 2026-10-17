@@ -97,9 +97,12 @@ SuperParasitesEditor::SuperParasitesEditor (SuperParasitesAudioProcessor& p) : A
     addMenu (quality, "quality", "QUALITY", { "Stereo, 16-bit", "Mono, 16-bit", "Stereo, 8-bit (low-fi)", "Mono, 8-bit (low-fi)" });
 
     addAndMakeVisible (freeze);
+    addAndMakeVisible (limiter);
+    limiter.setTooltip ("On: a soft limiter after Output Level keeps loud sounds from going past 0 dBFS (it bends peaks, so you can hear it on very loud sounds). Off: no limiting; loud sounds can go past 0 dBFS, so use Output Level or a limiter after this plug-in.");
     addAndMakeVisible (reverse);
     addAndMakeVisible (gate);
     addAndMakeVisible (pitchMidi);
+    limiterAtt   = std::make_unique<ButtonAtt> (proc.apvts, "limiter", limiter);
     freezeAtt    = std::make_unique<ButtonAtt> (proc.apvts, "freeze", freeze);
     reverseAtt   = std::make_unique<ButtonAtt> (proc.apvts, "reverse", reverse);
     gateAtt      = std::make_unique<ButtonAtt> (proc.apvts, "gate", gate);
@@ -412,7 +415,8 @@ void SuperParasitesEditor::resized()
     capture.setBounds (row.removeFromLeft (90).reduced (2)); row.removeFromLeft (6);
     reverse.setBounds (row.removeFromLeft (84)); row.removeFromLeft (6);
     gate.setBounds (row.removeFromLeft (64)); row.removeFromLeft (6);
-    pitchMidi.setBounds (row.removeFromLeft (170));
+    pitchMidi.setBounds (row.removeFromLeft (170)); row.removeFromLeft (6);
+    limiter.setBounds (row.removeFromLeft (84));
 
     const int thirdW = (W - 48 - 3 * 12) / 4;   // four menus in a row
     auto placeMenu = [&] (Menu& m, int x, int y)
