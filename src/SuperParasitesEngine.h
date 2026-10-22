@@ -27,6 +27,7 @@ public:
         float position = 0.5f, size = 0.5f, density = 0.7f, texture = 0.5f;
         float pitchPot = 0.5f;                               // the PITCH knob position, 0..1 (the module maps it through a detented curve)
         float pitchOffsetSemitones = 0.0f;                   // added on top, like the V/OCT input (used for MIDI follow)
+        int pitchSnap = 0;                                   // our addition: 0 Off, 1 Steps (octaves and fifths), 2 Semitones - snaps the PITCH knob's value
         // The module's four BLEND roles, each as its own value:
         float dryWet = 0.5f, stereoSpread = 0.5f, feedback = 0.0f, reverb = 0.0f;
         bool freeze = false;
@@ -115,6 +116,13 @@ public:
     // The PITCH knob's detented curve: knob position 0..1 -> semitones (-24..+24), as in the module.
     static float pitchPotToSemitones (float pot);
 
+    // Our addition: Pitch Snap applied to the knob's semitone value (before the MIDI note is added).
+    //   0 Off       - unchanged (the module's own detented curve)
+    //   1 Steps     - -24, -12, -7, 0, +7, +12, +24 (octaves and fifths)
+    //   2 Semitones - whole semitones
+    enum PitchSnap { SnapOff = 0, SnapSteps = 1, SnapSemitones = 2 };
+    static float snapPitch (float semitones, int mode);
+
 private:
     struct Frame { float l, r; };
 
@@ -194,7 +202,7 @@ private:
     int currentEngineRate = 0, lastEngineRateSeen = 0;
 
     // smoothed copies of the knob values (the firmware low-passes each knob; same coefficients)
-    float sPosition = 0.5f, sSize = 0.5f, sDensity = 0.7f, sTexture = 0.5f, sPitchPot = 0.5f, sNote = 0.0f;
+    float sPosition = 0.5f, sSize = 0.5f, sDensity = 0.7f, sTexture = 0.5f, sPitchPot = 0.5f, sNote = 0.0f, sSnapped = 0.0f;
     float sDryWet = 0.5f, sSpread = 0.5f, sFeedback = 0.0f, sReverb = 0.0f;
     bool lastFreeze = false, capturePending = false, smoothInit = false;
     int currentBufferLength = -1;

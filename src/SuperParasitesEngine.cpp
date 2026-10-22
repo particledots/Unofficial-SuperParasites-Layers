@@ -120,6 +120,18 @@ float SuperParasitesEngine::pitchPotToSemitones (float pot)
     return stmlib::Interpolate (clouds::lut_quantized_pitch, std::clamp (pot, 0.0f, 1.0f), 1024.0f);
 }
 
+float SuperParasitesEngine::snapPitch (float semitones, int mode)
+{
+    if (mode == SnapSemitones) return std::round (semitones);
+    if (mode != SnapSteps) return semitones;
+    static const float kSteps[] = { 0.f, 7.f, 12.f, 24.f };   // mirrored below zero
+    const float a = std::fabs (semitones);
+    float best = kSteps[0];
+    for (float d : kSteps)
+        if (std::fabs (a - d) < std::fabs (a - best)) best = d;
+    return semitones < 0.f ? -best : best;
+}
+
 void SuperParasitesEngine::prepare (double sr)
 {
     hostRate = sr;
@@ -169,6 +181,7 @@ void SuperParasitesEngine::runBlocks (const Params& p)
         {
             sPosition = p.position; sSize = p.size; sDensity = p.density; sTexture = p.texture; sPitchPot = p.pitchPot;
             sNote = p.pitchOffsetSemitones;
+            sSnapped = snapPitch (pitchPotToSemitones (p.pitchPot), p.pitchSnap);
             sDryWet = p.dryWet; sSpread = p.stereoSpread; sFeedback = p.feedback; sReverb = p.reverb;
             smoothInit = true;
         }
@@ -194,7 +207,15 @@ void SuperParasitesEngine::runBlocks (const Params& p)
         prm->reverb   = std::clamp (sReverb, 0.0f, 1.0f);
         prm->feedback = std::clamp (sFeedback, 0.0f, 1.0f);
         prm->stereo_spread = std::clamp (sSpread, 0.0f, 1.0f);
-        prm->pitch    = std::clamp (pitchPotToSemitones (sPitchPot) + sNote, -48.0f, 48.0f);
+        float knobSemitones = pitchPotToSemitones (sPitchPot);
+        if (p.pitchSnap != SnapOff)
+        {
+            // Pitch Snap: the knob's note is snapped, then glides over a few ms so a step is not a click. Off leaves the module's path untouched.
+            onePole (sSnapped, snapPitch (knobSemitones, p.pitchSnap), 0.2f);
+            knobSemitones = sSnapped;
+        }
+        else sSnapped = knobSemitones;
+        prm->pitch    = std::clamp (knobSemitones + sNote, -48.0f, 48.0f);
 
         // The Beat Repeat / Spectral Clouds parameters, filled in the way cv_scaler.cc does with nothing patched.
         prm->kammerl.slice_selection  = 0.0f;                              // texture CV

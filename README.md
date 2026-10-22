@@ -10,6 +10,19 @@ Not a Mutable Instruments product, and not made or endorsed by any of the module
 **I have not listened to it, and nothing here claims it sounds good, or better than anything else.** The tests below measure what is stored, what is
 played back and how the memory is used. Whether it is musical is for you to say.
 
+## Pitch Snap (version 0.4.0)
+A new **PITCH SNAP** menu (parameter `pitch_snap`, to the right of the mode hint) settles the PITCH knob on musical notes, as in the Unofficial Spotykach and Unofficial Beads plug-ins:
+* **Off (the default)** is exactly the 0.3.0 sound: the module's own detented knob curve.
+* **Steps** snaps to octaves and fifths: -24, -12, -7, 0, +7, +12, +24 semitones.
+* **Semitones** snaps to whole semitones.
+With Steps or Semitones the PITCH readout shows the note that actually plays (a whole number such as -12 or +7), not the raw knob position. The snap is applied to the knob's value before the MIDI note
+(Pitch Follows MIDI) is added, and the change glides over a few milliseconds so a step is not a click. It applies to the modes that shift pitch in semitones (Granular, Pitch shifter / time stretch, Looping delay,
+Oliverb, Resonestor). In Beat repeat and Spectral clouds the firmware reads the knob position itself rather than a pitch, so the snap does not apply there. Projects saved before 0.4.0 have no such parameter and load with Pitch Snap **Off**.
+There is no scale menu here: unlike Beads, this engine has no random pitch for a scale to snap.
+**Verified (Linux, headless; `tests/pitch_snap_test.cpp`, run in the workflow):** the snapping function is exact over the whole range; across every knob position Steps lands only on those seven values and never moves against the knob;
+in the Pitch shifter, a sine's output pitch follows the snapped value (measured within 0.1 semitone of the expected note in 7 knob/snap combinations); every mode stays finite and bounded with each setting and a sweeping knob, at both engine rates.
+**Not verified:** how it looks and feels in Logic (the menu position, the readout), and by ear in each mode.
+
 ## Limiter switch (version 0.3.0)
 A new **LIMITER** button (parameter `limiter`) sits at the end of the button row. **On (the default) is exactly the 0.2.0 sound**: the soft limiter after Output Level keeps loud sounds from going past 0 dBFS.
 **Off** removes it: the output is then the engine plus the Output Level gain and nothing else, so loud wet sounds can go past 0 dBFS (by tens of dB at high Output Level settings). Only two safety things

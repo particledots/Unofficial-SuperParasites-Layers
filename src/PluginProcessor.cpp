@@ -41,6 +41,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout SuperParasitesAudioProcessor
     p.push_back (std::make_unique<APB> (juce::ParameterID { "reverse", 1 }, "Reverse (granular)", false));
     p.push_back (std::make_unique<APB> (juce::ParameterID { "gate", 1 }, "Gate", false));
     p.push_back (std::make_unique<APB> (juce::ParameterID { "pitch_midi", 1 }, "Pitch Follows MIDI", false));
+    // Pitch Snap (our addition): what the PITCH knob settles on. Steps = octaves and fifths, Semitones = whole semitones.
+    p.push_back (std::make_unique<APC> (juce::ParameterID { "pitch_snap", 2 }, "Pitch Snap",
+                 juce::StringArray { "Off", "Steps", "Semitones" }, 0));
     p.push_back (std::make_unique<APC> (juce::ParameterID { "mode", 1 }, "Mode",
                  juce::StringArray { "Granular", "Pitch shifter / time stretch", "Looping delay", "Spectral madness",
                                      "Oliverb", "Resonestor", "Beat repeat", "Spectral clouds" }, 0));
@@ -211,6 +214,7 @@ void SuperParasitesAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     SuperParasitesEngine::Params prm;
     prm.position = v ("position"); prm.size = v ("size"); prm.density = v ("density"); prm.texture = v ("texture");
     prm.pitchPot = v ("pitch");
+    prm.pitchSnap = (int) v ("pitch_snap");
     prm.pitchOffsetSemitones = v ("pitch_midi") > 0.5f ? (float) (lastMidiNote - 60) : 0.0f;
     prm.dryWet = v ("dry_wet"); prm.stereoSpread = v ("spread"); prm.feedback = v ("feedback"); prm.reverb = v ("reverb");
     prm.freeze = v ("freeze") > 0.5f;
