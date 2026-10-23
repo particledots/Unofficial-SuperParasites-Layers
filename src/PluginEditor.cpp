@@ -72,9 +72,135 @@ void SuperParasitesLookAndFeel::drawToggleButton (juce::Graphics& g, juce::Toggl
     g.drawText (b.getButtonText(), b.getLocalBounds(), juce::Justification::centred);
 }
 
+namespace { constexpr int kWaveH = 118; }     // the waveform panel's height; everything else sits below it
+
+WaveformDisplay::WaveformDisplay (SuperParasitesAudioProcessor& p) : proc (p)
+{
+    proc.waveformViewerOpened();           // from now on the audio thread keeps the picture up to date
+    setOpaque (false);
+    startTimerHz (30);
+}
+
+WaveformDisplay::~WaveformDisplay() { stopTimer(); proc.waveformViewerClosed(); }
+
+void WaveformDisplay::timerCallback()
+{
+    proc.waveform().read (snap);
+    haveSnap = true;
+    repaint();
+}
+
+void WaveformDisplay::paint (juce::Graphics& g)
+{
+    const auto all = getLocalBounds().toFloat();
+    g.setColour (kPanel);
+    g.fillRoundedRectangle (all, 10.0f);
+    if (! haveSnap) return;
+
+    const int mode  = (int) *proc.apvts.getRawParameterValue ("mode");
+    const int layer = (int) *proc.apvts.getRawParameterValue ("layer");
+    const bool freezeOn = proc.apvts.getRawParameterValue ("freeze")->load() > 0.5f;
+    const bool layerPlays = layer > 0 && SuperParasitesEngine::modeUsesLayers (mode);
+
+    // what the display is showing the recording of
+    juce::String source = "RECORDING BUFFER: ";
+    if (! layerPlays) source << "Live input";
+    else if (proc.loadedLayer() != layer) source << "Layer " << layer << " (switching...)";
+    else source << "Layer " << layer;
+
+    const auto header = juce::Rectangle<int> (getLocalBounds()).removeFromTop (18).reduced (10, 2);
+    g.setFont (juce::Font (juce::FontOptions (11.0f, juce::Font::bold)));
+    g.setColour (kDim);
+    g.drawText (source, header, juce::Justification::centredLeft);
+
+    auto wave = getLocalBounds().reduced (10, 0).withTrimmedTop (20).withTrimmedBottom (16);
+    g.setColour (juce::Colour (0xff1a1c20));
+    g.fillRoundedRectangle (wave.toFloat(), 6.0f);
+
+    if (snap.hidden != 0)
+    {   // a mode with nothing to point at: greyed out, with the reason
+        g.setColour (kDim.withAlpha (0.5f));
+        g.drawLine ((float) wave.getX() + 8.0f, (float) wave.getCentreY(), (float) wave.getRight() - 8.0f, (float) wave.getCentreY(), 1.0f);
+        g.setColour (kDim);
+        g.setFont (juce::Font (juce::FontOptions (12.0f)));
+        const char* why = snap.hidden == 2 ? "No recording buffer in this mode: it works on the spectrum / resonators, so there is nothing for Position to point at."
+                        : snap.hidden == 3 ? "In this mode Position is the reverb's pre-delay, not a place in a recording."
+                                           : "Rebuilding the recording buffer...";
+        g.drawFittedText (why, wave.reduced (16, 6), juce::Justification::centred, 3);
+        return;
+    }
+
+    const int w = wave.getWidth();
+    if (w < 8 || snap.ringFrames <= 0) return;
+    const float cy = (float) wave.getCentreY(), half = (float) wave.getHeight() * 0.5f - 2.0f;
+    auto xOf = [&] (float back) { return (float) wave.getX() + snap.columnOfBack (back, w); };
+
+    // the band (Size) and, for Beat repeat, the whole slice; drawn first so the waveform stays readable on top
+    auto drawSpan = [&] (float farBack, float len, juce::Colour c, bool outline)
+    {
+        float far = farBack;
+        const float ring = (float) snap.ringFrames;
+        len = juce::jlimit (0.0f, ring, len);
+        auto one = [&] (float f, float l)
+        {   // a stretch from `f` back to `f - l` back, clipped to the picture
+            const float x0 = xOf (juce::jmin (f, ring)), x1 = xOf (juce::jmax (f - l, 0.0f));
+            if (x1 <= x0) return;
+            if (outline) { g.setColour (c); g.drawRect (x0, (float) wave.getY() + 1.0f, x1 - x0, (float) wave.getHeight() - 2.0f, 1.0f); }
+            else         { g.setColour (c); g.fillRect (x0, (float) wave.getY(), x1 - x0, (float) wave.getHeight()); }
+        };
+        one (far, len);
+        if (far > ring) one (far - ring, juce::jmin (len, far - ring));       // the part that wrapped round to the newest end
+    };
+    if (snap.hasSlice) drawSpan (snap.sliceFar, snap.sliceLen, kDim.withAlpha (0.7f), true);
+    if (snap.hasBand)  drawSpan (snap.bandFar, snap.bandLen, juce::Colour (0xffe0b050).withAlpha (0.20f), false);
+
+    // the waveform: loudest peak under each column, square-rooted so quiet sounds still show
+    std::vector<float> col ((size_t) w);
+    snap.columns (w, col.data());
+    g.setColour (kAccent.withAlpha (snap.writing ? 0.95f : 0.65f));
+    for (int x = 0; x < w; ++x)
+    {
+        const float a = std::sqrt (juce::jlimit (0.0f, 1.0f, col[(size_t) x])) * half;
+        g.fillRect ((float) (wave.getX() + x), cy - juce::jmax (a, 0.5f), 1.0f, juce::jmax (a, 0.5f) * 2.0f);
+    }
+
+    // the marker at the Position setting
+    if (snap.hasMarker)
+    {
+        const float mb = juce::jlimit (0.0f, (float) snap.ringFrames, snap.markerBack);
+        const float x = xOf (mb);
+        const auto warm = juce::Colour (0xffe0b050);
+        g.setColour (warm);
+        g.fillRect (x - 1.0f, (float) wave.getY(), 2.0f, (float) wave.getHeight());
+        const juce::String t = snap.kind == 3 ? juce::String (snap.seconds (mb), 2) + " s delay"
+                                              : juce::String (snap.seconds (mb), 2) + " s back";
+        g.setFont (juce::Font (juce::FontOptions (11.0f, juce::Font::bold)));
+        const bool leftSide = x > (float) wave.getCentreX();
+        g.drawText (t, juce::Rectangle<int> ((int) x + (leftSide ? -92 : 6), wave.getY() + 1, 86, 14),
+                    leftSide ? juce::Justification::centredRight : juce::Justification::centredLeft);
+    }
+
+    // time scale under the picture, and whether the recording is moving or held
+    g.setFont (juce::Font (juce::FontOptions (10.0f)));
+    g.setColour (kDim);
+    const auto foot = juce::Rectangle<int> (getLocalBounds()).removeFromBottom (16).reduced (10, 0);
+    g.drawText ("-" + juce::String (snap.seconds ((float) snap.ringFrames), 1) + " s", foot, juce::Justification::centredLeft);
+    g.drawText ("now", foot, juce::Justification::centredRight);
+
+    juce::String tag;
+    if (layerPlays && proc.loadedLayer() == layer) tag = "HELD: a layer plays from its own recording";
+    else if (! snap.writing && freezeOn) tag = "FROZEN: the recording is held still";
+    else if (mode == 6 && freezeOn) tag = "Beat repeat keeps recording while Freeze is on";
+    else if (mode == 6) tag = "Position / Size take effect at the next slice";
+    g.setColour (! snap.writing ? juce::Colour (0xffe0b050) : kDim);
+    g.setFont (juce::Font (juce::FontOptions (11.0f, juce::Font::bold)));
+    g.drawText (tag, getLocalBounds().removeFromTop (18).reduced (10, 2), juce::Justification::centredRight);
+}
+
 SuperParasitesEditor::SuperParasitesEditor (SuperParasitesAudioProcessor& p) : AudioProcessorEditor (&p), proc (p)
 {
     setLookAndFeel (&laf);
+    addAndMakeVisible (waveform);
 
     addKnob (position, "position", "POSITION");
     addKnob (size,     "size",     "SIZE");
@@ -217,7 +343,7 @@ SuperParasitesEditor::SuperParasitesEditor (SuperParasitesAudioProcessor& p) : A
         *proc.apvts.getParameter ("mode"), [this] (float v) { updateHint ((int) v); });
     modeWatch->sendInitialUpdate();
 
-    setSize (660, 860);
+    setSize (660, 860 + kWaveH);
 }
 
 SuperParasitesEditor::~SuperParasitesEditor() { stopTimer(); setLookAndFeel (nullptr); }
@@ -392,6 +518,7 @@ void SuperParasitesEditor::paint (juce::Graphics& g)
     g.setFont (juce::Font (juce::FontOptions (11.0f)));
     g.drawText ("Clouds + Parasites + Beat Repeat (as in Typhoon / Supercell) - community port, not a Mutable Instruments product", 20, 34, getWidth() - 40, 16, juce::Justification::centredLeft);
 
+    g.addTransform (juce::AffineTransform::translation (0.0f, (float) kWaveH));     // the waveform panel sits above the original layout
     g.setColour (kPanel);
     g.fillRoundedRectangle (12.0f, 58.0f, (float) getWidth() - 24.0f, 150.0f, 10.0f);    // main knobs
     g.fillRoundedRectangle (12.0f, 216.0f, (float) getWidth() - 24.0f, 150.0f, 10.0f);   // blend knobs
@@ -470,4 +597,9 @@ void SuperParasitesEditor::resized()
     homeLabel.setBounds (24, 750, W - 48, 16);
     ioLabel.setBounds (24, 768, W - 48, 18);
     layerNote.setBounds (24, 788, W - 48, 58);
+
+    // the waveform panel takes the top; everything laid out above moves down by its height
+    for (auto* c : getChildren())
+        if (c != &waveform) c->setTopLeftPosition (c->getX(), c->getY() + kWaveH);
+    waveform.setBounds (12, 58, W - 24, kWaveH - 8);
 }

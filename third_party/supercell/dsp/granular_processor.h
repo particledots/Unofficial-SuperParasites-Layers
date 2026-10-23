@@ -44,6 +44,7 @@
 #include "supercell/dsp/granular_sample_player.h"
 #include "supercell/dsp/kammerl_player.h"
 #include "supercell/dsp/looping_sample_player.h"
+#include "supercell/dsp/position_view.h"
 #include "supercell/dsp/pvoc/phase_vocoder.h"
 #include "supercell/dsp/sample_rate_converter.h"
 #include "supercell/dsp/wsola_sample_player.h"
@@ -232,6 +233,11 @@ class GranularProcessor {
   inline int32_t layer_record_frames() const { return layer_rec_frames_; }
   // The stored sample rate: 16 kHz in low-fi, otherwise the engine rate.
   inline float stored_sample_rate() const { return low_fidelity_ ? kBaseSampleRate / kDownsamplingFactor : rate_.hz; }
+
+  // ---- Unofficial SuperParasites Layers, waveform display ----------------------------------------------------------
+  // Read-only: where the POSITION (and SIZE) settings point on the recording buffer in the current mode, in frames back from
+  // the write head (see position_view.h). Call between blocks, from the audio thread. Changes nothing.
+  void GetPositionView(PositionView* v) const;
 
  private:
   void WarmDistortion(float* in, float parameter);

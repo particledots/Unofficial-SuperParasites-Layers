@@ -39,6 +39,7 @@
 #include "supercell/dsp/engine_rate.h"
 #include "supercell/dsp/frame.h"
 #include "supercell/dsp/parameters.h"
+#include "supercell/dsp/position_view.h"
 
 #include "supercell/resources.h"
 
@@ -76,7 +77,44 @@ class LoopingSamplePlayer {
   }
   
   inline bool synchronized() const { return synchronized_; }
-  
+
+  // Unofficial SuperParasites Layers, waveform display: where Position points on the tape, worked out as Play() does it below
+  // (read-only; nothing in the playback uses this). Shows the setting, not the smoothed delay that is still gliding to it.
+  void Describe(const Parameters& parameters, int32_t buffer_size, PositionView* v) const {
+    const int32_t max_delay = buffer_size - crossfade_duration_;
+    float target_delay = parameters.position * parameters.position * max_delay;
+    if (synchronized_) {
+      int index = roundf(parameters.position * static_cast<float>(kMultDivSteps));
+      CONSTRAIN(index, 0, kMultDivSteps-1);
+      do target_delay = kMultDivs[index--] * static_cast<float>(smoothed_tap_delay_);
+      while (target_delay > max_delay && index >= 0);
+    }
+    v->has_marker = true;
+    if (!parameters.freeze) {
+      v->kind = VIEW_DELAY;
+      v->marker_back = target_delay;
+      return;
+    }
+    float loop_point = parameters.position * max_delay * 15.0f / 16.0f;
+    loop_point += crossfade_duration_;
+    float d = parameters.size;
+    float loop_duration = (0.01f + 0.99f * d * d) * max_delay;
+    if (synchronized_) {
+      int index = roundf(d * static_cast<float>(kMultDivSteps));
+      CONSTRAIN(index, 0, kMultDivSteps-1);
+      do loop_duration = kMultDivs[index--] * static_cast<float>(smoothed_tap_delay_);
+      while (loop_duration > max_delay && index >= 0);
+    }
+    if (loop_point + loop_duration >= max_delay) {
+      loop_point = max_delay - loop_duration;
+    }
+    v->kind = VIEW_LOOP;
+    v->marker_back = loop_point;
+    v->has_band = true;
+    v->band_far = loop_point + loop_duration;
+    v->band_len = loop_duration;
+  }
+
   template<Resolution resolution>
   void Play(
       const AudioBuffer<resolution>* buffer,

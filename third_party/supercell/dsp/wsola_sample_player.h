@@ -44,6 +44,7 @@
 #include "supercell/dsp/frame.h"
 #include "supercell/dsp/window.h"
 #include "supercell/dsp/parameters.h"
+#include "supercell/dsp/position_view.h"
 #include "supercell/resources.h"
 
 namespace clouds {
@@ -236,6 +237,34 @@ class WSOLASamplePlayer {
 
 
   inline bool synchronized() const { return synchronized_; }
+
+  // Unofficial SuperParasites Layers, waveform display: where Position points on the tape, worked out as
+  // ScheduleAlignedWindow() does it below (read-only; nothing in the playback uses this). The window is searched for around this
+  // point, so the sound comes from near it rather than exactly at it.
+  void Describe(int32_t buffer_size, PositionView* v) const {
+    const float inv_pitch_ratio = SemitonesToRatio(-smoothed_pitch_);
+    int32_t limit = buffer_size;
+    limit -= static_cast<int32_t>(2.0f * window_size_ * inv_pitch_ratio);
+    limit -= 2 * window_size_;
+    if (limit < 0) {
+      limit = 0;
+    }
+    float position = limit * position_;
+    if (synchronized_) {
+      int index = roundf(position_ * static_cast<float>(kMultDivSteps));
+      CONSTRAIN(index, 0, kMultDivSteps-1);
+      do position = kMultDivs[index--] * static_cast<float>(tap_delay_);
+      while (position > limit && index >= 0);
+      position -= window_size_ * 2;
+      if (position < 0) position = 0;
+    }
+    v->kind = VIEW_STRETCH;
+    v->has_marker = true;
+    v->marker_back = position;
+    v->has_band = true;
+    v->band_far = position + window_size_;
+    v->band_len = static_cast<float>(window_size_);
+  }
 
  private:
   template<Resolution resolution>
