@@ -12,6 +12,7 @@
 #include <cstdint>
 #include "Resampler.h"
 #include "LayerAudio.h"
+#include "WaveformPicture.h"
 
 namespace clouds { class GranularProcessor; }
 
@@ -100,6 +101,14 @@ public:
     // For tests: the stored bytes of a layer's channel, and the bytes all layers hold at the moment.
     const std::vector<uint8_t>& layerBytes (int layer, int channel) const { return layers[layer - 1].mem[channel]; }
     size_t layerStoredBytes() const;
+
+    // ---- Waveform display ------------------------------------------------------------------------------------------
+    // A coarse picture of the recording buffer with the Position / Size markers (see WaveformPicture.h). It is only kept up to
+    // date while at least one editor has it open; the audio thread never waits for the editor, and the picture is read-only for
+    // the sound: with it on or off the output is the same sample for sample.
+    const WaveformPicture& waveform() const { return picture; }
+    void waveformViewerOpened() { viewers.fetch_add (1, std::memory_order_relaxed); }
+    void waveformViewerClosed() { viewers.fetch_sub (1, std::memory_order_relaxed); }
 
     void prepare (double hostSampleRate);
 
@@ -193,6 +202,15 @@ private:
     void discardRecording();
     void invalidateAllLayers();
     void publishLayers();
+
+    // waveform display (audio thread writes the picture; see updateWaveform())
+    WaveformPicture picture;
+    std::atomic<int> viewers { 0 };
+    int scanCursor = 0, scanRing = -1, scanSinceHeld = 0, scanIdleTick = 0;
+    int32_t scanGeneration = -1;
+    bool scanLowFi = false;
+    const void* scanPtr = nullptr;
+    void updateWaveform();
 
     std::unique_ptr<clouds::GranularProcessor> proc;
     std::vector<uint64_t> largeBuf, smallBuf;   // the module's 118784-byte main block and 65408-byte CCM block

@@ -32,6 +32,7 @@
 #ifndef CLOUDS_DSP_KAMMERL_PLAYER_H_
 #define CLOUDS_DSP_KAMMERL_PLAYER_H_
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -42,6 +43,7 @@
 #include "supercell/dsp/audio_buffer.h"
 #include "supercell/dsp/frame.h"
 #include "supercell/dsp/parameters.h"
+#include "supercell/dsp/position_view.h"
 
 #include "supercell/resources.h"
 
@@ -107,6 +109,34 @@ public:
 
 	bool isSlicePlaybackActive() const {
 		return num_remaining_samples_in_slice_ > 0;
+	}
+
+	// Unofficial SuperParasites Layers, waveform display (read-only; nothing in the playback uses this): the slice that was
+	// last started and the loop inside it, as places on the tape counted back from the write head. The firmware latches the
+	// loop when a slice starts, so a new Position only shows from the next slice. Returns without a marker before any slice.
+	void Describe(int32_t buffer_size, int32_t head, PositionView* v) const {
+		v->kind = VIEW_BEAT_REPEAT;
+		if (playback_mode_ == PLAYBACK_MODE_UNINITIALIZED || playback_mode_ == PLAYBACK_MODE_BYPASS
+				|| slice_size_samples_ <= 0 || buffer_size <= 0) {
+			return;
+		}
+		const int64_t slice_start = (slice_buffer_pos_index_ >> 12) % buffer_size;   // where the slice starts on the tape
+		const float size = static_cast<float>(buffer_size);
+		auto back_of = [&](float frames_after_slice_start) {
+			float back = static_cast<float>(head) - static_cast<float>(slice_start) - frames_after_slice_start;
+			back = std::fmod(back, size);
+			if (back < 0.0f) back += size;
+			return back;
+		};
+		const float slice_len = std::min(static_cast<float>(slice_size_samples_), size);
+		v->has_slice = true;
+		v->slice_far = back_of(0.0f);
+		v->slice_len = slice_len;
+		v->has_marker = true;
+		v->marker_back = back_of(slice_loop_begin_percent_ * static_cast<float>(slice_size_samples_));
+		v->has_band = true;
+		v->band_far = v->marker_back;
+		v->band_len = std::min(static_cast<float>(slice_size_samples_) * slice_loop_size_percent_, size);
 	}
 
 	// Returns the number of slices to skip based on the slice modulation input.

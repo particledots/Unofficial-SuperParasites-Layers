@@ -945,4 +945,47 @@ void GranularProcessor::EndLayerRecording() {
   layer_rec_ = false;
 }
 
+void GranularProcessor::GetPositionView(PositionView* v) const {
+  *v = PositionView();
+  if (reset_buffers_ || previous_playback_mode_ != playback_mode_ || !samples_valid_) {
+    v->hidden = VIEW_REBUILDING;
+    if (playback_mode_ == PLAYBACK_MODE_SPECTRAL || playback_mode_ == PLAYBACK_MODE_SPECTRAL_CLOUD ||
+        playback_mode_ == PLAYBACK_MODE_RESONESTOR) {
+      v->hidden = VIEW_NO_BUFFER;
+    }
+    return;
+  }
+  if (playback_mode_ == PLAYBACK_MODE_OLIVERB) {
+    v->hidden = VIEW_NOT_A_TIME;   // Position is the reverb's pre-delay here
+    return;
+  }
+  v->hidden = VIEW_SHOWN;
+  v->channels = num_channels_;
+  v->low_fi = low_fidelity_;
+  v->ring_frames = low_fidelity_ ? buffer_8_[0].size() : buffer_16_[0].size();
+  v->head = low_fidelity_ ? buffer_8_[0].head() : buffer_16_[0].head();
+  // The same rule as ProcessGranular(): is the incoming audio being written into the buffer right now?
+  bool writing = !parameters_.freeze || playback_mode_ == PLAYBACK_MODE_KAMMERL;
+  if (hold_writes_) writing = false;
+  if (layer_rec_) writing = true;
+  v->writing = writing;
+  switch (playback_mode_) {
+    case PLAYBACK_MODE_GRANULAR:
+      player_.Describe(parameters_, v->ring_frames, v);
+      break;
+    case PLAYBACK_MODE_STRETCH:
+      ws_player_.Describe(v->ring_frames, v);
+      break;
+    case PLAYBACK_MODE_LOOPING_DELAY:
+      looper_.Describe(parameters_, v->ring_frames, v);
+      break;
+    case PLAYBACK_MODE_KAMMERL:
+      kammerl_.Describe(v->ring_frames, v->head, v);
+      break;
+    default:
+      v->hidden = VIEW_NO_BUFFER;
+      break;
+  }
+}
+
 }  // namespace clouds
