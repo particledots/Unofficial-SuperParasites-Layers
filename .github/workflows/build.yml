@@ -114,6 +114,11 @@ jobs:
              0.2.0 have no Output Level and will come out about 9 dB louder: that is the fix, so lower the knob if you want the old level.
              Beat repeat and Resonestor have no dry path in the firmware, so Output Level does not make them match the input exactly.
           TXT
+          # Easy installer for Logic (double-click; same file in every Unofficial plugin)
+          cp tools/install/Install-Unofficial-Plugin.command dist/
+          chmod +x dist/Install-Unofficial-Plugin.command
+          if [ -f dist/INSTALL.txt ]; then printf '\nEASY INSTALL (Logic, Audio Unit): double-click Install-Unofficial-Plugin.command in this folder. It asks for your Mac password once.\n' >> dist/INSTALL.txt; fi
+          [ -x dist/Install-Unofficial-Plugin.command ] || { echo "::error::PACKAGE missing Install-Unofficial-Plugin.command"; exit 1; }
           ditto -c -k --keepParent dist SuperParasites-Layers-macOS.zip
 
       - uses: actions/upload-artifact@v4
